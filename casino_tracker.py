@@ -118,7 +118,9 @@ def get_current_streak(df):
         else:
             break
     return current_outcome, streak_count
+    
     def find_patterns(df, patterns_to_watch):
+    """  <-- ADDED TRIPLE QUOTES AND INDENTED
     Detects predefined sequences (patterns) in the outcomes of a DataFrame.
     Args:
         df (pd.DataFrame): DataFrame with an 'Outcome' column.
@@ -127,7 +129,8 @@ def get_current_streak(df):
                                   {'OOO_U': ['Over 21', 'Over 21', 'Over 21', 'Under 21']}
     Returns:
         dict: Counts of how many times each pattern was found.
-        
+    """  <-- ADDED TRIPLE QUOTES AND INDENTED
+
     pattern_counts = {name: 0 for name in patterns_to_watch.keys()}
     outcomes = df['Outcome'].tolist()
 
