@@ -264,6 +264,7 @@ if not st.session_state.rounds.empty:
         st.write("No rounds recorded for today yet.")
 else:
     st.write("No historical rounds to analyze daily tendency.")
+    
 # ... (After Daily Tendency section) ...
 
 st.header("Observed Patterns (Current Deck)")
