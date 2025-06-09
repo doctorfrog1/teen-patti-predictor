@@ -147,8 +147,6 @@ if card1 and card2 and card3: # Ensure all cards are selected before calculating
 else:
     st.write("Please select all three cards to calculate the total and add the round.")
 
----
-
 ## Real-time Insights
 
 ### Current Streak
