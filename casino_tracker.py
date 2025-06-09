@@ -143,7 +143,7 @@ if card1 and card2 and card3: # Ensure all cards are selected before calculating
         st.session_state.played_cards.add(card3)
 
         save_rounds()
-        st.experimental_rerun() # Rerun to update displays and available cards
+        st.rerun() # Rerun to update displays and available cards
 else:
     st.write("Please select all three cards to calculate the total and add the round.")
 
