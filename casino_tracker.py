@@ -264,7 +264,33 @@ if not st.session_state.rounds.empty:
         st.write("No rounds recorded for today yet.")
 else:
     st.write("No historical rounds to analyze daily tendency.")
+# ... (After Daily Tendency section) ...
 
+st.header("Observed Patterns (Current Deck)")
+
+if not st.session_state.rounds.empty:
+    current_deck_rounds_for_patterns = st.session_state.rounds[st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id].copy()
+    if not current_deck_rounds_for_patterns.empty:
+        # Call the find_patterns function you added in Step 2
+        pattern_counts = find_patterns(current_deck_rounds_for_patterns, PATTERNS_TO_WATCH)
+
+        found_any_pattern = False
+        for pattern_name, count in pattern_counts.items():
+            if count > 0:
+                st.write(f"- `{pattern_name}`: Found **{count}** time(s)")
+                found_any_pattern = True
+
+        if not found_any_pattern:
+            st.write("No defined patterns observed in the current deck yet.")
+    else:
+        st.write("No rounds played in the current deck to find patterns.")
+else:
+    st.write("No historical rounds to find patterns.")
+
+# --- (Prediction Module starts here) ---
+st.header("Next Round Prediction")
+
+# ... (Rest of your app code) ...
 
 ## Prediction Module
 
