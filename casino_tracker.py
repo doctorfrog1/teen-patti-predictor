@@ -73,7 +73,26 @@ def get_current_streak(df):
         else:
             break
     return current_outcome, streak_count
+def find_patterns(df, patterns_to_watch):
+    """
+    Detects predefined sequences (patterns) in the outcomes of a DataFrame.
+    Args:
+        df (pd.DataFrame): DataFrame with an 'Outcome' column.
+        patterns_to_watch (dict): A dictionary where keys are pattern names
+                                  and values are lists of outcomes, e.g.,
+                                  {'OOO_U': ['Over 21', 'Over 21', 'Over 21', 'Under 21']}
+    Returns:
+        dict: Counts of how many times each pattern was found.
+    """
+    pattern_counts = {name: 0 for name in patterns_to_watch.keys()}
+    outcomes = df['Outcome'].tolist()
 
+    for pattern_name, pattern_sequence in patterns_to_watch.items():
+        pattern_len = len(pattern_sequence)
+        for i in range(len(outcomes) - pattern_len + 1):
+            if outcomes[i:i+pattern_len] == pattern_sequence:
+                pattern_counts[pattern_name] += 1
+    return pattern_counts
 def reset_deck():
     """Resets the deck, starts a new Deck_ID."""
     st.session_state.current_deck_id += 1
