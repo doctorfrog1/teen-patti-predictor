@@ -1,0 +1,6 @@
+[theme]
+primaryColor="#F63366"  # Streamlit's default vibrant pink/red
+backgroundColor="#FFFFFF" # White
+secondaryBackgroundColor="#F0F2F6" # Light gray
+textColor="#262730" # Dark gray
+font="sans serif"
