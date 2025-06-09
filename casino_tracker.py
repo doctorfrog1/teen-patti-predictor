@@ -122,7 +122,7 @@ def get_current_streak(df):
     def find_patterns(df, patterns_to_watch):
     # This line (and all subsequent lines belonging to the function)
     # MUST be indented by exactly 4 spaces from the 'def' line above.
-    """
+ 
     Detects predefined sequences (patterns) in the outcomes of a DataFrame.
     Args:
         df (pd.DataFrame): DataFrame with an 'Outcome' column.
