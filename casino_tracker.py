@@ -119,7 +119,6 @@ def get_current_streak(df):
             break
     return current_outcome, streak_count
     def find_patterns(df, patterns_to_watch):
-
     Detects predefined sequences (patterns) in the outcomes of a DataFrame.
     Args:
         df (pd.DataFrame): DataFrame with an 'Outcome' column.
