@@ -119,10 +119,8 @@ def get_current_streak(df):
             break
     return current_outcome, streak_count
     
-    def find_patterns(df, patterns_to_watch):
-    # This line (and all subsequent lines belonging to the function)
-    # MUST be indented by exactly 4 spaces from the 'def' line above.
- 
+def find_patterns(df, patterns_to_watch):
+    
     Detects predefined sequences (patterns) in the outcomes of a DataFrame.
     Args:
         df (pd.DataFrame): DataFrame with an 'Outcome' column.
@@ -132,21 +130,14 @@ def get_current_streak(df):
     Returns:
         dict: Counts of how many times each pattern was found.
     
-    # These lines are also indented by 4 spaces
     pattern_counts = {name: 0 for name in patterns_to_watch.keys()}
     outcomes = df['Outcome'].tolist()
-
-    # This 'for' loop is also indented by 4 spaces
+    
     for pattern_name, pattern_sequence in patterns_to_watch.items():
-        # This 'pattern_len' line is indented by 8 spaces (4 from 'for' + 4 from 'def')
         pattern_len = len(pattern_sequence)
-        # This nested 'for' loop is indented by 8 spaces
         for i in range(len(outcomes) - pattern_len + 1):
-            # This 'if' statement is indented by 12 spaces (8 from 'for' + 4 from 'def')
             if outcomes[i:i+pattern_len] == pattern_sequence:
-                # This line is indented by 16 spaces (12 from 'if' + 4 from 'def')
                 pattern_counts[pattern_name] += 1
-    # This 'return' statement is indented by 4 spaces
     return pattern_counts
 
 def reset_deck():
