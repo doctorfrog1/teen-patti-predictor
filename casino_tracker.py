@@ -10,6 +10,51 @@ PREDICTION_ROUNDS_CONSIDERED = 10 # Number of previous rounds to consider for si
 STREAK_THRESHOLD = 3 # Minimum streak length to highlight
 OVER_UNDER_BIAS_THRESHOLD = 0.6 # If Over/Under > 60% of rounds, show bias
 
+# Add this PATTERNS_TO_WATCH dictionary here
+PATTERNS_TO_WATCH = {
+    # Existing patterns (specific longer sequences)
+    'OOO_U': ['Over 21', 'Over 21', 'Over 21', 'Under 21'],
+    'UUU_O': ['Under 21', 'Under 21', 'Under 21', 'Over 21'],
+    'OUOU': ['Over 21', 'Under 21', 'Over 21', 'Under 21'],
+    'UOUO': ['Under 21', 'Over 21', 'Under 21', 'Over 21'],
+
+    # Shorter, "binary-like" patterns and reversals (O=Over, U=Under)
+    'OO': ['Over 21', 'Over 21'],
+    'UU': ['Under 21', 'Under 21'],
+    'O_U': ['Over 21', 'Under 21'],
+    'U_O': ['Under 21', 'Over 21'],
+    'OOU': ['Over 21', 'Over 21', 'Under 21'],
+    'UUO': ['Under 21', 'Under 21', 'Over 21'],
+    'OUU': ['Over 21', 'Under 21', 'Under 21'],
+    'UOO': ['Under 21', 'Over 21', 'Over 21'],
+
+    # Longer streaks
+    'OOO': ['Over 21', 'Over 21', 'Over 21'],
+    'UUU': ['Under 21', 'Under 21', 'Under 21'],
+    'OOOO': ['Over 21', 'Over 21', 'Over 21', 'Over 21'],
+    'UUUU': ['Under 21', 'Under 21', 'Under 21', 'Under 21'],
+
+    # Alternating sequences (O=Over, U=Under)
+    'Alt_O_U_O': ['Over 21', 'Under 21', 'Over 21'],
+    'Alt_U_O_U': ['Under 21', 'Over 21', 'Under 21'],
+
+    # Patterns involving "Exactly 21" (E=Exactly 21)
+    'E': ['Exactly 21'],
+    'EE': ['Exactly 21', 'Exactly 21'],
+    'OE': ['Over 21', 'Exactly 21'],
+    'UE': ['Under 21', 'Exactly 21'],
+    'EO': ['Exactly 21', 'Over 21'],
+    'EU': ['Exactly 21', 'Under 21'],
+    'OEO': ['Over 21', 'Exactly 21', 'Over 21'],
+    'UEU': ['Under 21', 'Exactly 21', 'Under 21'],
+    'E_O_O': ['Exactly 21', 'Over 21', 'Over 21'],
+    'E_U_U': ['Exactly 21', 'Under 21', 'Under 21'],
+    'O_E_U': ['Over 21', 'Exactly 21', 'Under 21'],
+    'U_E_O': ['Under 21', 'Exactly 21', 'Over 21'],
+}
+
+# ... (rest of your existing code below this) ...
+
 # Define card values
 card_values = {
     'A♠': 1, '2♠': 2, '3♠': 3, '4♠': 4, '5♠': 5, '6♠': 6, '7♠': 7, '8♠': 8, '9♠': 9, '10♠': 10, 'J♠': 11, 'Q♠': 12, 'K♠': 13,
