@@ -197,7 +197,6 @@ if not st.session_state.rounds.empty:
 else:
     st.write("No historical rounds to analyze daily tendency.")
 
----
 
 ## Prediction Module
 
@@ -253,7 +252,6 @@ if not st.session_state.rounds.empty:
 else:
     st.write("Play some rounds first to enable predictions!")
 
----
 
 ### Full Round History
 
