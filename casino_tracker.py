@@ -141,7 +141,9 @@ def find_patterns(df, patterns_to_watch):
     return pattern_counts
 
 def reset_deck():
+    """
     Resets the deck, starts a new Deck_ID.
+    """
     st.session_state.current_deck_id += 1
     st.session_state.played_cards = set()
     # Always remove Player A's fixed cards for the new deck
