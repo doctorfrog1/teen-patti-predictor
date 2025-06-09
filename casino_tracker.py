@@ -131,7 +131,7 @@ def get_current_streak(df):
                                   {'OOO_U': ['Over 21', 'Over 21', 'Over 21', 'Under 21']}
     Returns:
         dict: Counts of how many times each pattern was found.
-    """
+    
     # These lines are also indented by 4 spaces
     pattern_counts = {name: 0 for name in patterns_to_watch.keys()}
     outcomes = df['Outcome'].tolist()
