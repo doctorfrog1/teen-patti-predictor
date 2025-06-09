@@ -151,7 +151,7 @@ else:
 
 ### Current Streak
 
-If not st.session_state.rounds.empty:
+if not st.session_state.rounds.empty:
     current_deck_rounds = st.session_state.rounds[st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id].copy()
     if not current_deck_rounds.empty:
         streak_outcome, streak_length = get_current_streak(current_deck_rounds)
