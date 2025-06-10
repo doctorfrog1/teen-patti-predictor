@@ -288,10 +288,7 @@ if not st.session_state.rounds.empty:
 else:
     st.write("No historical rounds to find patterns.")
 
-# --- (Prediction Module starts here) ---
-st.header("Next Round Prediction")
 
-# ... (Rest of your app code) ...
 
 ## Prediction Module
 
