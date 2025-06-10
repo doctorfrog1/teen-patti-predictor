@@ -176,8 +176,7 @@ else:
     st.write("ERROR: 'connections' section NOT found in st.secrets!")
 
 st.write("--- End Debugging st.secrets ---")
-
-    conn = st.connection("my_data")
+conn = st.connection("my_data")
 
     model = None
     le = None
