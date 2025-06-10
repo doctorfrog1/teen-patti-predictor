@@ -93,20 +93,20 @@ def load_rounds():
     if not gc:
         # Fallback if credentials failed, though st.stop() should prevent reaching here
         st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
+        # Also ensure played_cards is cleared if we can't load history
+        st.session_state.played_cards = set(PLAYER_A_FIXED_CARDS_STR) # Only Player A's cards initially
         return
 
     try:
         spreadsheet = gc.open("Casino Card Game Log") # <--- ENSURE THIS MATCHES YOUR SHEET NAME
         worksheet = spreadsheet.worksheet("Sheet1") # <--- ENSURE THIS MATCHES YOUR SHEET TAB NAME
 
-        # Get all records as a list of dictionaries (skips header automatically)
         data = worksheet.get_all_records()
         if data:
             df = pd.DataFrame(data)
-            # Ensure correct data types (especially Timestamp and Deck_ID)
             df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
             if 'Deck_ID' not in df.columns:
-                df['Deck_ID'] = 1 # Default to 1 if column somehow missing
+                df['Deck_ID'] = 1
             df['Deck_ID'] = df['Deck_ID'].astype(int)
             st.session_state.rounds = df
         else:
@@ -119,29 +119,33 @@ def load_rounds():
         st.error(f"Error loading rounds from Google Sheet: {e}. Starting with empty history.")
         st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
 
-    # --- Remaining logic for played_cards initialization (this stays largely the same) ---
-    # Initialize played_cards from the current deck's history
-    # This logic should now work correctly, as st.session_state.rounds will contain all history
-    st.session_state.played_cards = set()
-    if not st.session_state.rounds.empty:
-        # Get the highest Deck_ID from the loaded rounds to set current_deck_id correctly on startup
-        if 'current_deck_id' not in st.session_state:
-            st.session_state.current_deck_id = st.session_state.rounds['Deck_ID'].max() if not st.session_state.rounds.empty else 1
+    # --- REVISED played_cards and current_deck_id Initialization Logic ---
+    # This logic ensures played_cards is correctly set based on the *current* deck in st.session_state.rounds
 
+    # Set current_deck_id:
+    # If no rounds loaded, start at Deck 1. Otherwise, use the highest Deck_ID from loaded data.
+    if st.session_state.rounds.empty:
+        st.session_state.current_deck_id = 1
+    else:
+        st.session_state.current_deck_id = st.session_state.rounds['Deck_ID'].max()
+
+    # Initialize played_cards for the *current* deck
+    st.session_state.played_cards = set() # Always start fresh for the current deck's played cards
+
+    # Add cards played in the current deck from the history
+    if not st.session_state.rounds.empty:
         current_deck_rounds = st.session_state.rounds[st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id]
         for _, row in current_deck_rounds.iterrows():
             st.session_state.played_cards.add(row['Card1'])
             st.session_state.played_cards.add(row['Card2'])
             st.session_state.played_cards.add(row['Card3'])
 
-    # Always remove Player A's fixed cards (this ensures they are out of selection even if not logged yet)
+    # Always add Player A's fixed cards (they are never available)
     for card in PLAYER_A_FIXED_CARDS_STR:
         st.session_state.played_cards.add(card)
 
-    # Set default current_deck_id if app starts fresh with no history
-    if 'current_deck_id' not in st.session_state:
-         st.session_state.current_deck_id = 1
-
+    st.write(f"DEBUG FINAL played_cards after load_rounds logic: {st.session_state.played_cards}") # NEW DEBUG
+    
 def save_rounds():
     gc = get_gspread_client()
     if not gc:
