@@ -65,6 +65,19 @@ card_values = {
 
 ALL_CARDS = list(card_values.keys())
 
+# Function to get gspread client from Streamlit secrets
+@st.cache_resource
+def get_gspread_client():
+    try:
+        # st.secrets.gcp_service_account directly accesses the [gcp_service_account] section
+        gc = gspread.service_account_from_dict(st.secrets.gcp_service_account)
+        return gc
+    except Exception as e:
+        st.error(f"Error loading Google Sheets credentials: {e}. Please ensure st.secrets are configured.")
+        st.stop() # Stop the app if credentials are not loaded
+        return None
+
+
 # ... (imports and configurations like PLAYER_A_FIXED_CARDS_STR, card_values, ALL_CARDS) ...
 
 # --- Session State Initialization ---
@@ -103,17 +116,6 @@ if 'played_cards' not in st.session_state:
 
 # ... (rest of your code, including get_gspread_client() function, load_rounds() function, etc.) ...
 
-# Function to get gspread client from Streamlit secrets
-@st.cache_resource
-def get_gspread_client():
-    try:
-        # st.secrets.gcp_service_account directly accesses the [gcp_service_account] section
-        gc = gspread.service_account_from_dict(st.secrets.gcp_service_account)
-        return gc
-    except Exception as e:
-        st.error(f"Error loading Google Sheets credentials: {e}. Please ensure st.secrets are configured.")
-        st.stop() # Stop the app if credentials are not loaded
-        return None
 
 # --- Functions ---
 def load_rounds():
