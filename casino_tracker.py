@@ -119,6 +119,44 @@ def get_current_streak(df):
             break
     return current_outcome, streak_count
     
+def predict_next_outcome_from_pattern(df_all_rounds, pattern_sequence):
+    """
+    Analyzes historical data to predict the next outcome after a given pattern.
+
+    Args:
+        df_all_rounds (pd.DataFrame): The full DataFrame of all historical rounds.
+        pattern_sequence (list): The sequence of outcomes to look for (e.g., ['Over 21', 'Over 21']).
+
+    Returns:
+        tuple: (most_likely_outcome, confidence_percentage) or (None, 0) if no data.
+    """
+    if df_all_rounds.empty or not pattern_sequence:
+        return None, 0
+
+    next_outcomes = []
+    pattern_len = len(pattern_sequence)
+
+    # Iterate through all rounds, checking in each deck context
+    # Group by Deck_ID to prevent patterns from crossing deck boundaries
+    for deck_id, deck_df in df_all_rounds.groupby('Deck_ID'):
+        outcomes_in_deck = deck_df['Outcome'].tolist()
+        
+        for i in range(len(outcomes_in_deck) - pattern_len): # -pattern_len because we need a subsequent outcome
+            if outcomes_in_deck[i : i + pattern_len] == pattern_sequence:
+                # If the pattern is found, check the very next outcome
+                if (i + pattern_len) < len(outcomes_in_deck): # Ensure there IS a next outcome
+                    next_outcomes.append(outcomes_in_deck[i + pattern_len])
+    
+    if not next_outcomes:
+        return None, 0
+    
+    # Count occurrences of each next outcome
+    outcome_counts = pd.Series(next_outcomes).value_counts()
+    most_likely_outcome = outcome_counts.index[0]
+    confidence_percentage = (outcome_counts.iloc[0] / len(next_outcomes)) * 100
+
+    return most_likely_outcome, confidence_percentage
+    
 def find_patterns(df, patterns_to_watch):
     """
     Detects predefined sequences (patterns) in the outcomes of a DataFrame.
