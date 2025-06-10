@@ -254,7 +254,7 @@ def reset_deck():
         st.session_state.played_cards.add(card)
 
     st.success(f"Starting New Deck: Deck {st.session_state.current_deck_id}. Played cards reset for this deck.")
-    st.experimental_rerun() # Force a rerun to apply the new state immediately
+
 
 # --- Load data on app startup ---
 load_rounds()
