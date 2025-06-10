@@ -330,59 +330,64 @@ else:
 
 ## Prediction Module
 
+---
+
 st.header("Next Round Prediction")
 
 if not st.session_state.rounds.empty:
-    current_deck_rounds_for_pred = st.session_state.rounds[st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id]
+    # --- Pattern-Based Prediction Attempt ---
+    predicted_by_pattern = False
+    pattern_prediction_outcome = None
+    pattern_prediction_confidence = 0
 
-    if len(current_deck_rounds_for_pred) >= PREDICTION_ROUNDS_CONSIDERED:
-        # Simple frequency-based prediction from recent rounds
-        recent_outcomes = current_deck_rounds_for_pred['Outcome'].tail(PREDICTION_ROUNDS_CONSIDERED)
-        over_freq = (recent_outcomes == 'Over 21').sum()
-        under_freq = (recent_outcomes == 'Under 21').sum()
-        exactly_freq = (recent_outcomes == 'Exactly 21').sum()
+    current_deck_outcomes = st.session_state.rounds[st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id]['Outcome'].tolist()
 
-        total_recent_outcomes = over_freq + under_freq + exactly_freq
+    if len(current_deck_outcomes) >= 2: # Need at least 2 outcomes to check for any pattern end
+        # Check for the most recent completed pattern that can predict
+        # Iterate through patterns in reverse order of length to prioritize longer, more specific ones
+        sorted_patterns = sorted(PATTERNS_TO_WATCH.items(), key=lambda item: len(item[1]), reverse=True)
 
-        if total_recent_outcomes > 0:
-            if over_freq > under_freq and over_freq > exactly_freq:
-                st.success(f"Based on the last {PREDICTION_ROUNDS_CONSIDERED} rounds, the next round might be **Over 21**.")
-            elif under_freq > over_freq and under_freq > exactly_freq:
-                st.info(f"Based on the last {PREDICTION_ROUNDS_CONSIDERED} rounds, the next round might be **Under 21**.")
+        for pattern_name, pattern_sequence in sorted_patterns:
+            pattern_len = len(pattern_sequence)
+            if len(current_deck_outcomes) >= pattern_len and \
+               current_deck_outcomes[-pattern_len:] == pattern_sequence:
+                # This pattern just completed! Now predict based on it
+                
+                # Pass the *entire* rounds DataFrame for historical analysis
+                outcome, confidence = predict_next_outcome_from_pattern(st.session_state.rounds, pattern_sequence)
+                
+                if outcome:
+                    pattern_prediction_outcome = outcome
+                    pattern_prediction_confidence = confidence
+                    st.write(f"Based on pattern `{pattern_name}` (last {pattern_len} rounds):")
+                    st.markdown(f"**Prediction:** ➡️ **{pattern_prediction_outcome}** (Confidence: {pattern_prediction_confidence:.1f}%)")
+                    predicted_by_pattern = True
+                    break # Stop at the first (longest) matching pattern
+    
+    # --- Fallback to Simple Frequency-Based Prediction if no pattern was used ---
+    if not predicted_by_pattern:
+        recent_rounds = st.session_state.rounds[
+            st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id
+        ].tail(PREDICTION_ROUNDS_CONSIDERED)
+
+        if not recent_rounds.empty:
+            outcome_counts = recent_rounds['Outcome'].value_counts()
+            
+            # Exclude 'Exactly 21' from prediction logic if it's not relevant for Over/Under betting
+            if 'Exactly 21' in outcome_counts.index:
+                outcome_counts = outcome_counts.drop(labels='Exactly 21', errors='ignore')
+
+            if not outcome_counts.empty:
+                predicted_outcome = outcome_counts.index[0]
+                st.write(f"Based on last {len(recent_rounds)} rounds (current deck):")
+                st.markdown(f"**Prediction:** ➡️ **{predicted_outcome}**")
             else:
-                st.warning(f"Based on the last {PREDICTION_ROUNDS_CONSIDERED} rounds, the outcomes are balanced or 'Exactly 21' is common.")
+                st.write("Not enough 'Over 21' or 'Under 21' outcomes in recent rounds for a simple prediction.")
         else:
-            st.write(f"Not enough 'Over 21' or 'Under 21' outcomes in the last {PREDICTION_ROUNDS_CONSIDERED} rounds for a confident prediction.")
-    else:
-        st.write(f"Need at least {PREDICTION_ROUNDS_CONSIDERED} rounds in the current deck to start making predictions.")
-
-    st.subheader("Remaining Cards Analysis (for current deck)")
-    remaining_cards_count = len(ALL_CARDS) - len(st.session_state.played_cards)
-
-    if remaining_cards_count > 0:
-        st.write(f"**Cards remaining in current deck:** {remaining_cards_count}")
-        
-        # Count remaining high/low cards (simple analysis for prediction)
-        remaining_high_cards = [card for card in available_cards_for_selection if card_values[card] >= 10]
-        remaining_low_cards = [card for card in available_cards_for_selection if card_values[card] <= 5]
-
-        st.write(f"- High value cards (10-K) remaining: {len(remaining_high_cards)}")
-        st.write(f"- Low value cards (A-5) remaining: {len(remaining_low_cards)}")
-
-        if len(remaining_high_cards) / remaining_cards_count > 0.3: # Arbitrary threshold
-            st.info("Likely to see higher sums given the remaining high cards.")
-        elif len(remaining_low_cards) / remaining_cards_count > 0.3:
-            st.info("Likely to see lower sums given the remaining low cards.")
-        else:
-            st.info("Remaining cards distribution seems balanced.")
-    else:
-        st.write("All cards for the current deck seem to have been played!")
-        st.warning("Consider starting a new deck.")
-
+            st.write("Not enough rounds played in current deck for a prediction.")
 else:
-    st.write("Play some rounds first to enable predictions!")
-
-
+    st.write("No historical rounds available for prediction.")
+    
 ### Full Round History
 
 st.header("Round History (Current Deck)")
