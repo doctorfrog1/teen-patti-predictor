@@ -177,7 +177,8 @@ else:
 
 st.write("--- End Debugging st.secrets ---")
 
-conn = st.connection("my_data")
+    conn = st.connection("my_data")
+
     model = None
     le = None
 
