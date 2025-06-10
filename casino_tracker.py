@@ -65,15 +65,43 @@ card_values = {
 
 ALL_CARDS = list(card_values.keys())
 
+# ... (imports and configurations like PLAYER_A_FIXED_CARDS_STR, card_values, ALL_CARDS) ...
+
 # --- Session State Initialization ---
 if 'rounds' not in st.session_state:
     st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
 
+# Initialize current_deck_id only if it's not already in session state
+# This ensures that if it was set by a 'New Deck' button click, it's not overwritten
 if 'current_deck_id' not in st.session_state:
-    st.session_state.current_deck_id = 1 # Start with Deck 1
+    # On the very first run (no rounds loaded yet from sheet), default to 1.
+    # Otherwise, try to infer from loaded rounds.
+    # We will temporarily load rounds here to get max Deck_ID
+    # This might seem redundant, but it's for initial app startup state only.
+    temp_gc = get_gspread_client() # Get client temporarily
+    temp_df = pd.DataFrame()
+    if temp_gc:
+        try:
+            temp_spreadsheet = temp_gc.open("Casino Card Game Log")
+            temp_worksheet = temp_spreadsheet.worksheet("Sheet1")
+            temp_data = temp_worksheet.get_all_records()
+            if temp_data:
+                temp_df = pd.DataFrame(temp_data)
+                if 'Deck_ID' in temp_df.columns and not temp_df.empty:
+                    st.session_state.current_deck_id = temp_df['Deck_ID'].max()
+                else:
+                    st.session_state.current_deck_id = 1
+            else:
+                st.session_state.current_deck_id = 1
+        except Exception:
+            st.session_state.current_deck_id = 1 # Fallback if sheet not found or error
+    else:
+        st.session_state.current_deck_id = 1 # Fallback if no client
 
 if 'played_cards' not in st.session_state:
     st.session_state.played_cards = set()
+
+# ... (rest of your code, including get_gspread_client() function, load_rounds() function, etc.) ...
 
 # Function to get gspread client from Streamlit secrets
 @st.cache_resource
