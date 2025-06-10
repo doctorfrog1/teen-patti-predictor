@@ -1,10 +1,10 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+import gspread
 import os
 
 # --- Configuration ---
-LOG_FILE = 'round_log.csv'
 PLAYER_A_FIXED_CARDS_STR = ['J♣', '10♠', '9♠'] # Player A's fixed cards (assuming they are always out of play)
 PREDICTION_ROUNDS_CONSIDERED = 10 # Number of previous rounds to consider for simple prediction
 STREAK_THRESHOLD = 3 # Minimum streak length to highlight
@@ -75,35 +75,97 @@ if 'current_deck_id' not in st.session_state:
 if 'played_cards' not in st.session_state:
     st.session_state.played_cards = set()
 
+# Function to get gspread client from Streamlit secrets
+@st.cache_resource
+def get_gspread_client():
+    try:
+        # st.secrets.gcp_service_account directly accesses the [gcp_service_account] section
+        gc = gspread.service_account_from_dict(st.secrets.gcp_service_account)
+        return gc
+    except Exception as e:
+        st.error(f"Error loading Google Sheets credentials: {e}. Please ensure st.secrets are configured.")
+        st.stop() # Stop the app if credentials are not loaded
+        return None
+
 # --- Functions ---
 def load_rounds():
-    """Loads round data from CSV."""
-    if os.path.exists(LOG_FILE):
-        df = pd.read_csv(LOG_FILE, parse_dates=['Timestamp'])
-        # Ensure 'Deck_ID' column exists, add if not (for old logs)
-        if 'Deck_ID' not in df.columns:
-            df['Deck_ID'] = 1 # Assign default Deck_ID 1 to old entries
-        st.session_state.rounds = df
-    else:
+    gc = get_gspread_client()
+    if not gc:
+        # Fallback if credentials failed, though st.stop() should prevent reaching here
         st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
-    
+        return
+
+    try:
+        spreadsheet = gc.open("Casino Card Game Log") # <--- ENSURE THIS MATCHES YOUR SHEET NAME
+        worksheet = spreadsheet.worksheet("Sheet1") # <--- ENSURE THIS MATCHES YOUR SHEET TAB NAME
+
+        # Get all records as a list of dictionaries (skips header automatically)
+        data = worksheet.get_all_records()
+        if data:
+            df = pd.DataFrame(data)
+            # Ensure correct data types (especially Timestamp and Deck_ID)
+            df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
+            if 'Deck_ID' not in df.columns:
+                df['Deck_ID'] = 1 # Default to 1 if column somehow missing
+            df['Deck_ID'] = df['Deck_ID'].astype(int)
+            st.session_state.rounds = df
+        else:
+            st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
+
+    except gspread.exceptions.SpreadsheetNotFound:
+        st.error("Google Sheet 'Casino Card Game Log' not found. Please ensure the name is correct and it's shared with the service account.")
+        st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
+    except Exception as e:
+        st.error(f"Error loading rounds from Google Sheet: {e}. Starting with empty history.")
+        st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
+
+    # --- Remaining logic for played_cards initialization (this stays largely the same) ---
     # Initialize played_cards from the current deck's history
-    # This ensures consistency if the app is re-run and a deck is ongoing
+    # This logic should now work correctly, as st.session_state.rounds will contain all history
+    st.session_state.played_cards = set()
     if not st.session_state.rounds.empty:
+        # Get the highest Deck_ID from the loaded rounds to set current_deck_id correctly on startup
+        if 'current_deck_id' not in st.session_state:
+            st.session_state.current_deck_id = st.session_state.rounds['Deck_ID'].max() if not st.session_state.rounds.empty else 1
+
         current_deck_rounds = st.session_state.rounds[st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id]
-        st.session_state.played_cards = set()
         for _, row in current_deck_rounds.iterrows():
             st.session_state.played_cards.add(row['Card1'])
             st.session_state.played_cards.add(row['Card2'])
             st.session_state.played_cards.add(row['Card3'])
-    
-    # Always remove Player A's fixed cards
+
+    # Always remove Player A's fixed cards (this ensures they are out of selection even if not logged yet)
     for card in PLAYER_A_FIXED_CARDS_STR:
         st.session_state.played_cards.add(card)
 
+    # Set default current_deck_id if app starts fresh with no history
+    if 'current_deck_id' not in st.session_state:
+         st.session_state.current_deck_id = 1
+
 def save_rounds():
-    """Saves round data to CSV."""
-    st.session_state.rounds.to_csv(LOG_FILE, index=False)
+    gc = get_gspread_client()
+    if not gc:
+        st.warning("Cannot save rounds: Google Sheets client not available.")
+        return
+
+    try:
+        spreadsheet = gc.open("Casino Card Game Log") # <--- ENSURE THIS MATCHES YOUR SHEET NAME
+        worksheet = spreadsheet.worksheet("Sheet1") # <--- ENSURE THIS MATCHES YOUR SHEET TAB NAME
+
+        # Convert DataFrame to a list of lists (including header)
+        # Use .astype(str) for all columns to ensure consistent string writing to Sheets
+        data_to_write = [st.session_state.rounds.columns.tolist()] + st.session_state.rounds.astype(str).values.tolist()
+
+        # Clear existing content and write DataFrame from A1
+        # This ensures the sheet is always a fresh copy of your DataFrame
+        worksheet.clear()
+        worksheet.update('A1', data_to_write)
+        # st.success("Rounds saved to Google Sheet.") # You can add this back for feedback
+
+    except gspread.exceptions.SpreadsheetNotFound:
+        st.error("Cannot save: Google Sheet 'Casino Card Game Log' not found. Please create the sheet and share it correctly.")
+    except Exception as e:
+        st.error(f"Error saving rounds to Google Sheet: {e}")
 
 def get_current_streak(df):
     """Calculates the current streak of 'Over' or 'Under'."""
