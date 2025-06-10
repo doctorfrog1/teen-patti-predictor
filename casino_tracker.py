@@ -122,8 +122,10 @@ def load_rounds():
     gc = get_gspread_client()
     if not gc:
         st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
-        # Ensure played_cards is reset based on the *current* Deck_ID even if data load fails
+        # If client fails, we still need to set played_cards correctly for the current (likely Deck 1) state
+        # Only Player A's cards initially if data load fails.
         st.session_state.played_cards = set(PLAYER_A_FIXED_CARDS_STR)
+        st.write(f"DEBUG FINAL played_cards after load_rounds logic (NO CLIENT): {st.session_state.played_cards}")
         return
 
     try:
@@ -148,23 +150,22 @@ def load_rounds():
         st.error(f"Error loading rounds from Google Sheet: {e}. Starting with empty history.")
         st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
 
-    # --- REVISED played_cards Initialization Logic within load_rounds ---
-    # IMPORTANT: Do NOT set current_deck_id here based on max of rounds.
-    # It should be set in the session state initialization or by the 'New Deck' button.
+    # --- Crucial REVISED played_cards Initialization Logic ---
+    # This ensures played_cards is correctly set based on the *current* deck in st.session_state.rounds
 
-    # Initialize played_cards for the *currently active* deck (st.session_state.current_deck_id)
-    st.session_state.played_cards = set()
+    st.session_state.played_cards = set() # !!! Always start fresh for the current deck's played cards here !!!
 
     # Add cards played in the current deck from the history
     if not st.session_state.rounds.empty:
         # Filter rounds based on the *current* session_state.current_deck_id
         current_deck_rounds = st.session_state.rounds[st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id]
         for _, row in current_deck_rounds.iterrows():
+            # Add cards from the current deck's history
             st.session_state.played_cards.add(row['Card1'])
             st.session_state.played_cards.add(row['Card2'])
             st.session_state.played_cards.add(row['Card3'])
 
-    # Always add Player A's fixed cards (they are never available)
+    # Always add Player A's fixed cards (they are never available in any deck)
     for card in PLAYER_A_FIXED_CARDS_STR:
         st.session_state.played_cards.add(card)
 
