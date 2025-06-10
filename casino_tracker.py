@@ -330,8 +330,6 @@ else:
 
 ## Prediction Module
 
----
-
 st.header("Next Round Prediction")
 
 if not st.session_state.rounds.empty:
