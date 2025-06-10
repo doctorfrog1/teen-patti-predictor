@@ -1,14 +1,26 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import gspread
+from gspread.exceptions import SpreadsheetNotFound
 import os
 
+# --- NEW IMPORTS FOR AI ---
+from sklearn.preprocessing import LabelEncoder
+from sklearn.linear_model import LogisticRegression
+import joblib # For saving/loading the model
+
 # --- Configuration ---
-PLAYER_A_FIXED_CARDS_STR = ['J♣', '10♠', '9♠'] # Player A's fixed cards (assuming they are always out of play)
+PLAYER_A_FIXED_CARDS_STR = {'J♣', '10♠', '9♠'} # Player A's fixed cards (assuming they are always out of play)
 PREDICTION_ROUNDS_CONSIDERED = 10 # Number of previous rounds to consider for simple prediction
 STREAK_THRESHOLD = 3 # Minimum streak length to highlight
 OVER_UNDER_BIAS_THRESHOLD = 0.6 # If Over/Under > 60% of rounds, show bias
+
+# --- AI Configuration ---
+SEQUENCE_LENGTH = 3 # You can adjust this based on how many past outcomes you think matter
+MODEL_FILE = "prediction_model.joblib"
+ENCODER_FILE = "label_encoder.joblib"
+
 
 # Add this PATTERNS_TO_WATCH dictionary here
 PATTERNS_TO_WATCH = {
@@ -53,23 +65,21 @@ PATTERNS_TO_WATCH = {
     'U_E_O': ['Under 21', 'Exactly 21', 'Over 21'],
 }
 
-# ... (rest of your existing code below this) ...
-
-# Define card values
+# Define card values (J, Q, K are 11, 12, 13 as per your request)
 card_values = {
     'A♠': 1, '2♠': 2, '3♠': 3, '4♠': 4, '5♠': 5, '6♠': 6, '7♠': 7, '8♠': 8, '9♠': 9, '10♠': 10, 'J♠': 11, 'Q♠': 12, 'K♠': 13,
     'A♦': 1, '2♦': 2, '3♦': 3, '4♦': 4, '5♦': 5, '6♦': 6, '7♦': 7, '8♦': 8, '9♦': 9, '10♦': 10, 'J♦': 11, 'Q♦': 12, 'K♦': 13,
     'A♣': 1, '2♣': 2, '3♣': 3, '4♣': 4, '5♣': 5, '6♣': 6, '7♣': 7, '8♣': 8, '9♣': 9, '10♣': 10, 'J♣': 11, 'Q♣': 12, 'K♣': 13,
     'A♥': 1, '2♥': 2, '3♥': 3, '4♥': 4, '5♥': 5, '6♥': 6, '7♥': 7, '8♥': 8, '9♥': 9, '10♥': 10, 'J♥': 11, 'Q♥': 12, 'K♥': 13
 }
-
 ALL_CARDS = list(card_values.keys())
+
+# --- HELPER FUNCTIONS ---
 
 # Function to get gspread client from Streamlit secrets
 @st.cache_resource
 def get_gspread_client():
     try:
-        # st.secrets.gcp_service_account directly accesses the [gcp_service_account] section
         gc = gspread.service_account_from_dict(st.secrets.gcp_service_account)
         return gc
     except Exception as e:
@@ -77,55 +87,128 @@ def get_gspread_client():
         st.stop() # Stop the app if credentials are not loaded
         return None
 
+# --- NEW: AI Model Training Function (Modified for Daily Learning & Streamlit App Data) ---
+def train_and_save_prediction_model(all_rounds_df, sequence_length=SEQUENCE_LENGTH):
+    """
+    Trains a Logistic Regression model on recent (today's) outcomes and saves it using Streamlit App Data.
+    """
+    conn = st.connection("my_data")
 
-# ... (imports and configurations like PLAYER_A_FIXED_CARDS_STR, card_values, ALL_CARDS) ...
-
-# --- Session State Initialization ---
-if 'rounds' not in st.session_state:
-    st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
-
-# Initialize current_deck_id only if it's not already in session state
-# This ensures that if it was set by a 'New Deck' button click, it's not overwritten
-if 'current_deck_id' not in st.session_state:
-    # On the very first run (no rounds loaded yet from sheet), default to 1.
-    # Otherwise, try to infer from loaded rounds.
-    # We will temporarily load rounds here to get max Deck_ID
-    # This might seem redundant, but it's for initial app startup state only.
-    temp_gc = get_gspread_client() # Get client temporarily
-    temp_df = pd.DataFrame()
-    if temp_gc:
-        try:
-            temp_spreadsheet = temp_gc.open("Casino Card Game Log")
-            temp_worksheet = temp_spreadsheet.worksheet("Sheet1")
-            temp_data = temp_worksheet.get_all_records()
-            if temp_data:
-                temp_df = pd.DataFrame(temp_data)
-                if 'Deck_ID' in temp_df.columns and not temp_df.empty:
-                    st.session_state.current_deck_id = temp_df['Deck_ID'].max()
-                else:
-                    st.session_state.current_deck_id = 1
-            else:
-                st.session_state.current_deck_id = 1
-        except Exception:
-            st.session_state.current_deck_id = 1 # Fallback if sheet not found or error
+    # Filter data for today's outcomes
+    today = datetime.now().date()
+    if 'Timestamp' in all_rounds_df.columns:
+        all_rounds_df['Timestamp'] = pd.to_datetime(all_rounds_df['Timestamp'])
+        daily_rounds_df = all_rounds_df[all_rounds_df['Timestamp'].dt.date == today].copy()
     else:
-        st.session_state.current_deck_id = 1 # Fallback if no client
+        daily_rounds_df = pd.DataFrame() # No timestamp, cannot filter
 
-if 'played_cards' not in st.session_state:
-    st.session_state.played_cards = set()
+    st.info(f"Preparing data for AI model training from {len(daily_rounds_df)} rounds played today ({today})...")
+    if daily_rounds_df.empty or len(daily_rounds_df) < sequence_length + 1:
+        st.warning(f"Not enough recent rounds data to train the AI model. Need at least {sequence_length + 1} rounds from today.")
+        try:
+            if conn.exists(MODEL_FILE): conn.delete(MODEL_FILE)
+            if conn.exists(ENCODER_FILE): conn.delete(ENCODER_FILE)
+            st.info("Cleared old AI model files due to insufficient data.")
+        except Exception:
+            pass # Ignore if deletion fails or files don't exist
+        return False # Indicate training failed
 
-# ... (rest of your code, including get_gspread_client() function, load_rounds() function, etc.) ...
+    # 1. Prepare data: Create sequences (features) and target outcomes (labels)
+    features = []
+    labels = []
+    outcomes = daily_rounds_df['Outcome'].tolist()
+
+    for i in range(len(outcomes) - sequence_length):
+        features.append(outcomes[i : i + sequence_length])
+        labels.append(outcomes[i + sequence_length])
+
+    if not features:
+        st.warning(f"Not enough sequences generated from today's data ({len(outcomes)} outcomes, sequence length {sequence_length}).")
+        return False
+
+    # 2. Encoding categorical data
+    le = LabelEncoder()
+    all_possible_outcomes = list(set(outcomes + ['Over 21', 'Under 21', 'Exactly 21']))
+    le.fit(all_possible_outcomes)
+
+    encoded_features = []
+    for seq in features:
+        encoded_features.append(le.transform(seq))
+    encoded_labels = le.transform(labels)
+
+    X = pd.DataFrame(encoded_features)
+    y = encoded_labels
+
+    st.info(f"Training AI model with {len(X)} samples from today's data...")
+    model = LogisticRegression(max_iter=1000, random_state=42)
+    try:
+        model.fit(X, y)
+
+        # Save the trained model and encoder using Streamlit App Data connection
+        with conn.open(MODEL_FILE, "wb") as f:
+            joblib.dump(model, f)
+        with conn.open(ENCODER_FILE, "wb") as f:
+            joblib.dump(le, f)
+
+        st.success("AI prediction model trained and saved successfully to Streamlit App Data!")
+        return True
+    except Exception as e:
+        st.error(f"Error during AI model training or saving: {e}")
+        return False
+
+# --- NEW: AI Model Loading Function (Modified for Streamlit App Data) ---
+@st.cache_resource
+def load_ai_model():
+    conn = st.connection("my_data")
+    model = None
+    le = None
+
+    try:
+        if conn.exists(MODEL_FILE) and conn.exists(ENCODER_FILE):
+            with conn.open(MODEL_FILE, "rb") as f:
+                model = joblib.load(f)
+            with conn.open(ENCODER_FILE, "rb") as f:
+                le = joblib.load(f)
+            st.sidebar.success("AI Prediction Model Loaded.")
+        else:
+            st.sidebar.warning("AI Prediction Model files not found. Please train the model first.")
+    except Exception as e:
+        st.sidebar.error(f"Error loading AI model from Streamlit App Data: {e}")
+    return model, le
+
+# --- NEW: Function to load all rounds from sheet for training ---
+def load_all_historical_rounds_from_sheet():
+    gc = get_gspread_client()
+    if not gc:
+        return pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID']) # Return empty DF
+
+    try:
+        spreadsheet = gc.open("Casino Card Game Log")
+        worksheet = spreadsheet.worksheet("Sheet1")
+        data = worksheet.get_all_records()
+        if data:
+            df = pd.DataFrame(data)
+            # Ensure Deck_ID is numeric
+            if 'Deck_ID' in df.columns:
+                df['Deck_ID'] = pd.to_numeric(df['Deck_ID'], errors='coerce').fillna(1).astype(int) # Default to 1 if NaN after coerce
+            else:
+                df['Deck_ID'] = 1 # Add Deck_ID if missing
+            return df
+        else:
+            return pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
+    except SpreadsheetNotFound:
+        st.error("Google Sheet 'Casino Card Game Log' not found. Please ensure it exists and is shared with the service account.")
+        return pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
+    except Exception as e:
+        st.error(f"Error loading all historical rounds from Google Sheet: {e}")
+        return pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
 
 
-# --- Functions ---
 def load_rounds():
     gc = get_gspread_client()
     if not gc:
         st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
-        # If client fails, we still need to set played_cards correctly for the current (likely Deck 1) state
-        # Only Player A's cards initially if data load fails.
-        st.session_state.played_cards = set(PLAYER_A_FIXED_CARDS_STR)
-        st.write(f"DEBUG FINAL played_cards after load_rounds logic (NO CLIENT): {st.session_state.played_cards}")
+        st.session_state.played_cards = set(PLAYER_A_FIXED_CARDS_STR) # Only Player A's cards initially if data load fails.
         return
 
     try:
@@ -143,7 +226,7 @@ def load_rounds():
         else:
             st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
 
-    except gspread.exceptions.SpreadsheetNotFound:
+    except SpreadsheetNotFound:
         st.error("Google Sheet 'Casino Card Game Log' not found. Please ensure the name is correct and it's shared with the service account.")
         st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
     except Exception as e:
@@ -151,16 +234,12 @@ def load_rounds():
         st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
 
     # --- Crucial REVISED played_cards Initialization Logic ---
-    # This ensures played_cards is correctly set based on the *current* deck in st.session_state.rounds
-
-    st.session_state.played_cards = set() # !!! Always start fresh for the current deck's played cards here !!!
+    st.session_state.played_cards = set() # Always start fresh for the current deck's played cards here
 
     # Add cards played in the current deck from the history
     if not st.session_state.rounds.empty:
-        # Filter rounds based on the *current* session_state.current_deck_id
         current_deck_rounds = st.session_state.rounds[st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id]
         for _, row in current_deck_rounds.iterrows():
-            # Add cards from the current deck's history
             st.session_state.played_cards.add(row['Card1'])
             st.session_state.played_cards.add(row['Card2'])
             st.session_state.played_cards.add(row['Card3'])
@@ -169,8 +248,7 @@ def load_rounds():
     for card in PLAYER_A_FIXED_CARDS_STR:
         st.session_state.played_cards.add(card)
 
-    st.write(f"DEBUG FINAL played_cards after load_rounds logic: {st.session_state.played_cards}")
-    
+
 def save_rounds():
     gc = get_gspread_client()
     if not gc:
@@ -181,15 +259,10 @@ def save_rounds():
         spreadsheet = gc.open("Casino Card Game Log") # <--- ENSURE THIS MATCHES YOUR SHEET NAME
         worksheet = spreadsheet.worksheet("Sheet1") # <--- ENSURE THIS MATCHES YOUR SHEET TAB NAME
 
-        # Convert DataFrame to a list of lists (including header)
-        # Use .astype(str) for all columns to ensure consistent string writing to Sheets
         data_to_write = [st.session_state.rounds.columns.tolist()] + st.session_state.rounds.astype(str).values.tolist()
 
-        # Clear existing content and write DataFrame from A1
-        # This ensures the sheet is always a fresh copy of your DataFrame
         worksheet.clear()
         worksheet.update('A1', data_to_write)
-        # st.success("Rounds saved to Google Sheet.") # You can add this back for feedback
 
     except gspread.exceptions.SpreadsheetNotFound:
         st.error("Cannot save: Google Sheet 'Casino Card Game Log' not found. Please create the sheet and share it correctly.")
@@ -209,15 +282,13 @@ def get_current_streak(df):
         else:
             break
     return current_outcome, streak_count
-    
+
 def predict_next_outcome_from_pattern(df_all_rounds, pattern_sequence):
     """
     Analyzes historical data to predict the next outcome after a given pattern.
-
     Args:
         df_all_rounds (pd.DataFrame): The full DataFrame of all historical rounds.
         pattern_sequence (list): The sequence of outcomes to look for (e.g., ['Over 21', 'Over 21']).
-
     Returns:
         tuple: (most_likely_outcome, confidence_percentage) or (None, 0) if no data.
     """
@@ -231,31 +302,28 @@ def predict_next_outcome_from_pattern(df_all_rounds, pattern_sequence):
     # Group by Deck_ID to prevent patterns from crossing deck boundaries
     for deck_id, deck_df in df_all_rounds.groupby('Deck_ID'):
         outcomes_in_deck = deck_df['Outcome'].tolist()
-        
+
         for i in range(len(outcomes_in_deck) - pattern_len): # -pattern_len because we need a subsequent outcome
             if outcomes_in_deck[i : i + pattern_len] == pattern_sequence:
-                # If the pattern is found, check the very next outcome
                 if (i + pattern_len) < len(outcomes_in_deck): # Ensure there IS a next outcome
                     next_outcomes.append(outcomes_in_deck[i + pattern_len])
-    
+
     if not next_outcomes:
         return None, 0
-    
-    # Count occurrences of each next outcome
+
     outcome_counts = pd.Series(next_outcomes).value_counts()
     most_likely_outcome = outcome_counts.index[0]
     confidence_percentage = (outcome_counts.iloc[0] / len(next_outcomes)) * 100
 
     return most_likely_outcome, confidence_percentage
-    
+
 def find_patterns(df, patterns_to_watch):
     """
     Detects predefined sequences (patterns) in the outcomes of a DataFrame.
     Args:
         df (pd.DataFrame): DataFrame with an 'Outcome' column.
         patterns_to_watch (dict): A dictionary where keys are pattern names
-                                  and values are lists of outcomes, e.g.,
-                                  {'OOO_U': ['Over 21', 'Over 21', 'Over 21', 'Under 21']}
+                                  and values are lists of outcomes.
     Returns:
         dict: Counts of how many times each pattern was found.
     """
@@ -271,7 +339,6 @@ def find_patterns(df, patterns_to_watch):
 
 def reset_deck():
     st.session_state.current_deck_id += 1
-    st.write(f"DEBUG: New Deck button clicked. current_deck_id is now {st.session_state.current_deck_id}") # NEW DEBUG
     st.session_state.played_cards = set() # This clears played cards for the NEW deck
 
     # Player A's fixed cards are re-added immediately for the new deck
@@ -280,17 +347,89 @@ def reset_deck():
 
     st.success(f"Starting New Deck: Deck {st.session_state.current_deck_id}. Played cards reset for this deck.")
 
+# --- AI Model Initialization (Call load_ai_model here, before session state or UI) ---
+# This loads the model once when the app starts from Streamlit App Data
+# This MUST be placed here, at the very top level of your script,
+# before any st.session_state access or Streamlit UI elements are defined.
+ai_model_initial_load, label_encoder_initial_load = load_ai_model()
+
+
+# --- Session State Initialization ---
+if 'rounds' not in st.session_state:
+    st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
+
+# Initialize current_deck_id only if it's not already in session state
+if 'current_deck_id' not in st.session_state:
+    temp_gc = get_gspread_client()
+    temp_df = pd.DataFrame()
+    if temp_gc:
+        try:
+            temp_spreadsheet = temp_gc.open("Casino Card Game Log")
+            temp_worksheet = temp_spreadsheet.worksheet("Sheet1")
+            temp_data = temp_worksheet.get_all_records()
+            if temp_data:
+                temp_df = pd.DataFrame(temp_data)
+                if 'Deck_ID' in temp_df.columns and not temp_df.empty:
+                    st.session_state.current_deck_id = temp_df['Deck_ID'].max()
+                else:
+                    st.session_state.current_deck_id = 1
+            else:
+                st.session_state.current_deck_id = 1
+        except Exception:
+            st.session_state.current_deck_id = 1
+    else:
+        st.session_state.current_deck_id = 1
+
+if 'played_cards' not in st.session_state:
+    st.session_state.played_cards = set()
+
+# --- NEW: Ensure AI model and encoder are in session state for later updates ---
+# These will be updated by the 'Train AI Model' button click
+if 'ai_model' not in st.session_state:
+    st.session_state.ai_model = ai_model_initial_load
+if 'label_encoder' not in st.session_state:
+    st.session_state.label_encoder = label_encoder_initial_load
+
+if 'historical_patterns' not in st.session_state: # Ensure this is initialized if not already
+    st.session_state.historical_patterns = pd.DataFrame(columns=['Timestamp', 'Deck_ID', 'Pattern_Name', 'Pattern_Sequence', 'Start_Round_ID', 'End_Round_ID'])
+
 
 # --- Load data on app startup ---
 load_rounds()
 
 st.title("Casino Card Game Tracker & Predictor")
 
-# --- Deck ID and Reset ---
+# --- Streamlit Sidebar ---
 st.sidebar.header(f"Current Deck: ID {st.session_state.current_deck_id}")
 if st.sidebar.button("New Deck (Reset Learning)"):
     reset_deck()
     st.rerun() # Rerun to update the available cards list and clear display
+
+# --- NEW: AI Model Training Button in Sidebar ---
+st.sidebar.markdown("---") # Separator
+st.sidebar.subheader("AI Model Management")
+
+if st.sidebar.button("Train/Retrain AI Model"):
+    # Load all historical rounds for training.
+    # This will be filtered for today's data inside the training function.
+    all_historical_rounds = load_all_historical_rounds_from_sheet()
+    with st.spinner("Training AI model... This might take a moment."):
+        # The training function now returns True/False based on success
+        training_successful = train_and_save_prediction_model(all_historical_rounds)
+        if training_successful:
+            # If training is successful, reload the model into memory
+            # This ensures the app uses the newly trained model immediately
+            st.session_state.ai_model, st.session_state.label_encoder = load_ai_model()
+            st.rerun() # Rerun to update prediction with new model
+        else:
+            st.error("AI model training failed. See messages above.")
+
+# Display AI model status in sidebar (optional but helpful)
+if st.session_state.ai_model and st.session_state.label_encoder:
+    st.sidebar.success("AI Model Ready: ✅")
+else:
+    st.sidebar.warning("AI Model Not Ready: ❌ (Train it!)")
+
 
 # --- Card Input Section ---
 st.header("Enter Round Details")
@@ -335,7 +474,7 @@ if card1 and card2 and card3: # Ensure all cards are selected before calculating
             'Deck_ID': st.session_state.current_deck_id
         }
         st.session_state.rounds = pd.concat([st.session_state.rounds, pd.DataFrame([new_round])], ignore_index=True)
-        
+
         # Add cards to played_cards set for the current deck
         st.session_state.played_cards.add(card1)
         st.session_state.played_cards.add(card2)
@@ -367,12 +506,13 @@ else:
 
 if not st.session_state.rounds.empty:
     today_date = datetime.now().date()
+    st.session_state.rounds['Timestamp'] = pd.to_datetime(st.session_state.rounds['Timestamp'], errors='coerce')
     daily_rounds = st.session_state.rounds[st.session_state.rounds['Timestamp'].dt.date == today_date]
 
     if not daily_rounds.empty:
         over_count = daily_rounds[daily_rounds['Outcome'] == 'Over 21'].shape[0]
         under_count = daily_rounds[daily_rounds['Outcome'] == 'Under 21'].shape[0]
-        total_daily_outcomes = over_count + under_count # Exclude 'Exactly 21' for bias calculation if desired
+        total_daily_outcomes = over_count + under_count
 
         if total_daily_outcomes > 0:
             over_percentage = over_count / total_daily_outcomes
@@ -395,15 +535,12 @@ if not st.session_state.rounds.empty:
         st.write("No rounds recorded for today yet.")
 else:
     st.write("No historical rounds to analyze daily tendency.")
-    
-# ... (After Daily Tendency section) ...
 
 st.header("Observed Patterns (Current Deck)")
 
 if not st.session_state.rounds.empty:
     current_deck_rounds_for_patterns = st.session_state.rounds[st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id].copy()
     if not current_deck_rounds_for_patterns.empty:
-        # Call the find_patterns function you added in Step 2
         pattern_counts = find_patterns(current_deck_rounds_for_patterns, PATTERNS_TO_WATCH)
 
         found_any_pattern = False
@@ -420,51 +557,92 @@ else:
     st.write("No historical rounds to find patterns.")
 
 
-
 ## Prediction Module
 
 st.header("Next Round Prediction")
 
 if not st.session_state.rounds.empty:
+    current_deck_outcomes = st.session_state.rounds[st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id]['Outcome'].tolist()
+
     # --- Pattern-Based Prediction Attempt ---
     predicted_by_pattern = False
     pattern_prediction_outcome = None
     pattern_prediction_confidence = 0
 
-    current_deck_outcomes = st.session_state.rounds[st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id]['Outcome'].tolist()
-
-    if len(current_deck_outcomes) >= 2: # Need at least 2 outcomes to check for any pattern end
-        # Check for the most recent completed pattern that can predict
-        # Iterate through patterns in reverse order of length to prioritize longer, more specific ones
+    if len(current_deck_outcomes) >= 2:
         sorted_patterns = sorted(PATTERNS_TO_WATCH.items(), key=lambda item: len(item[1]), reverse=True)
 
         for pattern_name, pattern_sequence in sorted_patterns:
             pattern_len = len(pattern_sequence)
             if len(current_deck_outcomes) >= pattern_len and \
                current_deck_outcomes[-pattern_len:] == pattern_sequence:
-                # This pattern just completed! Now predict based on it
-                
-                # Pass the *entire* rounds DataFrame for historical analysis
+
                 outcome, confidence = predict_next_outcome_from_pattern(st.session_state.rounds, pattern_sequence)
-                
+
                 if outcome:
                     pattern_prediction_outcome = outcome
                     pattern_prediction_confidence = confidence
                     st.write(f"Based on pattern `{pattern_name}` (last {pattern_len} rounds):")
                     st.markdown(f"**Prediction:** ➡️ **{pattern_prediction_outcome}** (Confidence: {pattern_prediction_confidence:.1f}%)")
                     predicted_by_pattern = True
-                    break # Stop at the first (longest) matching pattern
-    
-    # --- Fallback to Simple Frequency-Based Prediction if no pattern was used ---
-    if not predicted_by_pattern:
-        recent_rounds = st.session_state.rounds[
-            st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id
-        ].tail(PREDICTION_ROUNDS_CONSIDERED)
+                    break
 
-        if not recent_rounds.empty:
+    # --- NEW: AI Model Prediction Attempt ---
+    ai_model_prediction_attempted = False
+    ai_model_prediction_error_occurred = False # Flag to manage fallback logic
+
+    if st.session_state.ai_model and st.session_state.label_encoder and len(current_deck_outcomes) >= SEQUENCE_LENGTH:
+        ai_model_prediction_attempted = True
+        st.markdown("---") # Separator for AI Prediction
+        st.subheader("AI Model's Prediction")
+        try:
+            last_n_outcomes = current_deck_outcomes[-SEQUENCE_LENGTH:]
+
+            known_outcomes = st.session_state.label_encoder.classes_
+            if not all(outcome in known_outcomes for outcome in last_n_outcomes):
+                st.warning("AI model cannot predict: Unknown outcomes in the recent sequence. Retrain model with more diverse data.")
+                ai_model_prediction_error_occurred = True
+            else:
+                encoded_last_n = st.session_state.label_encoder.transform(last_n_outcomes).reshape(1, -1)
+
+                predicted_encoded_outcome = st.session_state.ai_model.predict(encoded_last_n)[0]
+                predicted_outcome_ai = st.session_state.label_encoder.inverse_transform([predicted_encoded_outcome])[0]
+
+                probabilities = st.session_state.ai_model.predict_proba(encoded_last_n)[0]
+                confidence_ai = probabilities[predicted_encoded_outcome] * 100
+
+                st.markdown(f"🤖 **AI Model Prediction:** ➡️ **{predicted_outcome_ai}** (Confidence: {confidence_ai:.1f}%)")
+                st.caption(f"Based on the last {SEQUENCE_LENGTH} outcomes: {', '.join(last_n_outcomes)}")
+
+                prob_df = pd.DataFrame({
+                    'Outcome': st.session_state.label_encoder.classes_,
+                    'Probability': probabilities
+                }).sort_values(by='Probability', ascending=False)
+                st.dataframe(prob_df, hide_index=True, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"AI Model prediction error: {e}. Ensure model is trained and data is consistent.")
+            st.caption("Try retraining the model if this persists.")
+            ai_model_prediction_error_occurred = True
+    elif st.session_state.ai_model and st.session_state.label_encoder and len(current_deck_outcomes) < SEQUENCE_LENGTH:
+        st.warning(f"AI model needs at least {SEQUENCE_LENGTH} recent outcomes to predict. Play more rounds!")
+        ai_model_prediction_attempted = True
+    elif not st.session_state.ai_model:
+        st.warning("AI Prediction Model not loaded. Please train it using the 'Train AI Model' button in the sidebar.")
+        ai_model_prediction_attempted = True
+
+
+    # --- Existing Fallback to Simple Frequency-Based Prediction (Adjusted) ---
+    # Only show this if no pattern prediction AND no successful AI prediction was made.
+    # It will show if AI was not ready, or had an error, or insufficient rounds.
+    if not predicted_by_pattern and (not ai_model_prediction_attempted or ai_model_prediction_error_occurred):
+         recent_rounds = st.session_state.rounds[
+            st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id
+         ].tail(PREDICTION_ROUNDS_CONSIDERED)
+
+         if not recent_rounds.empty:
             outcome_counts = recent_rounds['Outcome'].value_counts()
-            
-            # Exclude 'Exactly 21' from prediction logic if it's not relevant for Over/Under betting
+
             if 'Exactly 21' in outcome_counts.index:
                 outcome_counts = outcome_counts.drop(labels='Exactly 21', errors='ignore')
 
@@ -474,11 +652,12 @@ if not st.session_state.rounds.empty:
                 st.markdown(f"**Prediction:** ➡️ **{predicted_outcome}**")
             else:
                 st.write("Not enough 'Over 21' or 'Under 21' outcomes in recent rounds for a simple prediction.")
-        else:
-            st.write("Not enough rounds played in current deck for a prediction.")
-else:
+         else:
+             st.write("Not enough rounds played in current deck for a prediction.")
+elif st.session_state.rounds.empty: # Original check for no rounds at all
     st.write("No historical rounds available for prediction.")
-    
+
+
 ### Full Round History
 
 st.header("Round History (Current Deck)")
