@@ -206,6 +206,9 @@ st.header("Enter Round Details")
 # Filter available cards by removing played cards and Player A's fixed cards
 available_cards_for_selection = [card for card in ALL_CARDS if card not in st.session_state.played_cards]
 
+st.write("DEBUG: Cards in played_cards set:", st.session_state.played_cards)
+st.write("DEBUG: Available cards for selection:", available_cards_for_selection)
+
 card1 = st.selectbox("Select Card 1", available_cards_for_selection, key="card1_select")
 card2 = st.selectbox("Select Card 2", [c for c in available_cards_for_selection if c != card1], key="card2_select")
 card3 = st.selectbox("Select Card 3", [c for c in available_cards_for_selection if c != card1 and c != card2], key="card3_select")
