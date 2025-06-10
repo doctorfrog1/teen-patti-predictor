@@ -245,15 +245,16 @@ def find_patterns(df, patterns_to_watch):
     return pattern_counts
 
 def reset_deck():
-    """
-    Resets the deck, starts a new Deck_ID.
-    """
     st.session_state.current_deck_id += 1
-    st.session_state.played_cards = set()
-    # Always remove Player A's fixed cards for the new deck
+    st.write(f"DEBUG: New Deck button clicked. current_deck_id is now {st.session_state.current_deck_id}") # NEW DEBUG
+    st.session_state.played_cards = set() # This clears played cards for the NEW deck
+
+    # Player A's fixed cards are re-added immediately for the new deck
     for card in PLAYER_A_FIXED_CARDS_STR:
         st.session_state.played_cards.add(card)
-    st.success(f"New deck started! Current Deck ID: {st.session_state.current_deck_id}")
+
+    st.success(f"Starting New Deck: Deck {st.session_state.current_deck_id}. Played cards reset for this deck.")
+    st.experimental_rerun() # Force a rerun to apply the new state immediately
 
 # --- Load data on app startup ---
 load_rounds()
