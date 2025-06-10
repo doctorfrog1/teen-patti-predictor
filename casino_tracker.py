@@ -9,6 +9,7 @@ PLAYER_A_FIXED_CARDS_STR = ['J♣', '10♠', '9♠'] # Player A's fixed cards (a
 PREDICTION_ROUNDS_CONSIDERED = 10 # Number of previous rounds to consider for simple prediction
 STREAK_THRESHOLD = 3 # Minimum streak length to highlight
 OVER_UNDER_BIAS_THRESHOLD = 0.6 # If Over/Under > 60% of rounds, show bias
+PATTERN_CONFIDENCE_THRESHOLD = 60 # Minimum confidence percentage for pattern-based prediction to be used
 
 # Add this PATTERNS_TO_WATCH dictionary here
 PATTERNS_TO_WATCH = {
