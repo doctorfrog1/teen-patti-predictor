@@ -20,7 +20,7 @@ OVER_UNDER_BIAS_THRESHOLD = 0.6 # If Over/Under > 60% of rounds, show bias
 SEQUENCE_LENGTH = 3 # You can adjust this based on how many past outcomes you think matter
 MODEL_FILE = "prediction_model.joblib"
 ENCODER_FILE = "label_encoder.joblib"
-
+MODEL_DIR = ".streamlit/data" # Define the directory for models and encoders
 
 # Add this PATTERNS_TO_WATCH dictionary here
 PATTERNS_TO_WATCH = {
@@ -87,13 +87,11 @@ def get_gspread_client():
         st.stop() # Stop the app if credentials are not loaded
         return None
 
-# --- NEW: AI Model Training Function (Modified for Daily Learning & Streamlit App Data) ---
+# --- NEW: AI Model Training Function (Modified for Daily Learning & Direct File I/O) ---
 def train_and_save_prediction_model(all_rounds_df, sequence_length=SEQUENCE_LENGTH):
     """
-    Trains a Logistic Regression model on recent (today's) outcomes and saves it using Streamlit App Data.
+    Trains a Logistic Regression model on recent (today's) outcomes and saves it using direct file I/O.
     """
-    conn = st.connection("my_data")
-
     # Filter data for today's outcomes
     today = datetime.now().date()
     if 'Timestamp' in all_rounds_df.columns:
@@ -105,9 +103,15 @@ def train_and_save_prediction_model(all_rounds_df, sequence_length=SEQUENCE_LENG
     st.info(f"Preparing data for AI model training from {len(daily_rounds_df)} rounds played today ({today})...")
     if daily_rounds_df.empty or len(daily_rounds_df) < sequence_length + 1:
         st.warning(f"Not enough recent rounds data to train the AI model. Need at least {sequence_length + 1} rounds from today.")
+        
+        # Construct full paths to the model files
+        model_path = os.path.join(MODEL_DIR, MODEL_FILE)
+        encoder_path = os.path.join(MODEL_DIR, ENCODER_FILE)
+
         try:
-            if conn.exists(MODEL_FILE): conn.delete(MODEL_FILE)
-            if conn.exists(ENCODER_FILE): conn.delete(ENCODER_FILE)
+            # Use standard Python file operations for deletion
+            if os.path.exists(model_path): os.remove(model_path)
+            if os.path.exists(encoder_path): os.remove(encoder_path)
             st.info("Cleared old AI model files due to insufficient data.")
         except Exception:
             pass # Ignore if deletion fails or files don't exist
@@ -144,10 +148,17 @@ def train_and_save_prediction_model(all_rounds_df, sequence_length=SEQUENCE_LENG
     try:
         model.fit(X, y)
 
-        # Save the trained model and encoder using Streamlit App Data connection
-        with conn.open(MODEL_FILE, "wb") as f:
+        # Construct full paths to the model files
+        model_path = os.path.join(MODEL_DIR, MODEL_FILE)
+        encoder_path = os.path.join(MODEL_DIR, ENCODER_FILE)
+
+        # Ensure the directory exists before writing
+        os.makedirs(MODEL_DIR, exist_ok=True)
+
+        # Save the trained model and encoder using standard Python file operations
+        with open(model_path, "wb") as f:
             joblib.dump(model, f)
-        with conn.open(ENCODER_FILE, "wb") as f:
+        with open(encoder_path, "wb") as f:
             joblib.dump(le, f)
 
         st.success("AI prediction model trained and saved successfully to Streamlit App Data!")
@@ -156,9 +167,10 @@ def train_and_save_prediction_model(all_rounds_df, sequence_length=SEQUENCE_LENG
         st.error(f"Error during AI model training or saving: {e}")
         return False
 
-# --- NEW: AI Model Loading Function (Modified for Streamlit App Data) ---
+# --- NEW: AI Model Loading Function (Modified for Direct File I/O) ---
 @st.cache_resource
 def load_ai_model():
+    # Keep debug prints temporarily to confirm no more connection issues
     st.write("--- Debugging st.secrets ---")
     st.write(f"st.secrets content: {st.secrets}")
 
@@ -176,16 +188,20 @@ def load_ai_model():
         st.write("ERROR: 'connections' section NOT found in st.secrets!")
 
     st.write("--- End Debugging st.secrets ---")
-    conn = st.connection("my_data")
 
     model = None
     le = None
 
+    # Construct full paths to the model files
+    model_path = os.path.join(MODEL_DIR, MODEL_FILE)
+    encoder_path = os.path.join(MODEL_DIR, ENCODER_FILE)
+
     try:
-        if conn.exists(MODEL_FILE) and conn.exists(ENCODER_FILE):
-            with conn.open(MODEL_FILE, "rb") as f:
+        # Use standard Python file operations instead of st.connection
+        if os.path.exists(model_path) and os.path.exists(encoder_path):
+            with open(model_path, "rb") as f:
                 model = joblib.load(f)
-            with conn.open(ENCODER_FILE, "rb") as f:
+            with open(encoder_path, "rb") as f:
                 le = joblib.load(f)
             st.sidebar.success("AI Prediction Model Loaded.")
         else:
@@ -654,11 +670,11 @@ if not st.session_state.rounds.empty:
     # Only show this if no pattern prediction AND no successful AI prediction was made.
     # It will show if AI was not ready, or had an error, or insufficient rounds.
     if not predicted_by_pattern and (not ai_model_prediction_attempted or ai_model_prediction_error_occurred):
-         recent_rounds = st.session_state.rounds[
-            st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id
-         ].tail(PREDICTION_ROUNDS_CONSIDERED)
+          recent_rounds = st.session_state.rounds[
+              st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id
+           ].tail(PREDICTION_ROUNDS_CONSIDERED)
 
-         if not recent_rounds.empty:
+          if not recent_rounds.empty:
             outcome_counts = recent_rounds['Outcome'].value_counts()
 
             if 'Exactly 21' in outcome_counts.index:
@@ -670,8 +686,8 @@ if not st.session_state.rounds.empty:
                 st.markdown(f"**Prediction:** ➡️ **{predicted_outcome}**")
             else:
                 st.write("Not enough 'Over 21' or 'Under 21' outcomes in recent rounds for a simple prediction.")
-         else:
-             st.write("Not enough rounds played in current deck for a prediction.")
+          else:
+              st.write("Not enough rounds played in current deck for a prediction.")
 elif st.session_state.rounds.empty: # Original check for no rounds at all
     st.write("No historical rounds available for prediction.")
 
