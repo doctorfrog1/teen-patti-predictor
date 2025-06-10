@@ -159,6 +159,24 @@ def train_and_save_prediction_model(all_rounds_df, sequence_length=SEQUENCE_LENG
 # --- NEW: AI Model Loading Function (Modified for Streamlit App Data) ---
 @st.cache_resource
 def load_ai_model():
+    st.write("--- Debugging st.secrets ---")
+st.write(f"st.secrets content: {st.secrets}")
+
+if "connections" in st.secrets:
+    st.write(f"st.secrets['connections'] content: {st.secrets['connections']}")
+    if "my_data" in st.secrets["connections"]:
+        st.write(f"st.secrets['connections']['my_data'] content: {st.secrets['connections']['my_data']}")
+        if "type" in st.secrets["connections"]["my_data"]:
+            st.write("Found 'type' key in my_data connection!")
+        else:
+            st.write("ERROR: 'type' key NOT found in my_data connection despite being in secrets.toml!")
+    else:
+        st.write("ERROR: 'my_data' connection NOT found in st.secrets['connections']!")
+else:
+    st.write("ERROR: 'connections' section NOT found in st.secrets!")
+
+st.write("--- End Debugging st.secrets ---")
+
     conn = st.connection("my_data")
     model = None
     le = None
