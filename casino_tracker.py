@@ -151,6 +151,10 @@ def load_all_historical_rounds_from_sheet():
                 "Exactly 21": "Exactly 21",
                 "Under 21_U": "Under 21", # Explicitly map the problematic value
                 "Under 21_1": "Under 21", # Map any other known problematic values
+                "Under 21_O": "Under 21",
+                "O": "Over 21",
+                "U": "Under 21",
+                "E": "Exactly 21",
                 # Add more mappings if you discover other variations in your sheet
             })
             # Filter out any outcomes that are still not in our expected list after cleaning
