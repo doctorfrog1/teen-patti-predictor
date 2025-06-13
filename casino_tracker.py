@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 import gspread
 from gspread.exceptions import SpreadsheetNotFound
 import os
-# import json # No longer needed
 
 from sklearn.preprocessing import LabelEncoder
 from sklearn.linear_model import LogisticRegression
@@ -12,9 +11,8 @@ import joblib
 
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
+from oauth2client.service_account import ServiceAccountCredentials # Ensure this is imported
 
-# NEW IMPORT REQUIRED FOR THIS METHOD
-from oauth2client.service_account import ServiceAccountCredentials
 
 
 # --- Configuration ---
@@ -111,102 +109,171 @@ def get_gspread_and_drive_clients():
         st.stop()
         return None, None # Ensure return None for both if error occurs
 
-def train_and_save_prediction_model(all_rounds_df, sequence_length=SEQUENCE_LENGTH):
-    # Filter for outcomes relevant to prediction (Over 21, Under 21, Exactly 21)
-    relevant_outcomes_df = all_rounds_df[all_rounds_df['Outcome'].isin(['Over 21', 'Under 21', 'Exactly 21'])].copy()
-
-    if relevant_outcomes_df.empty:
-        st.warning("No relevant outcomes ('Over 21', 'Under 21', 'Exactly 21') in the historical data to train the AI model.")
-        return False
-
-    unique_outcomes_count = relevant_outcomes_df['Outcome'].nunique()
-    if unique_outcomes_count < 2:
-        st.warning(f"AI model training requires at least 2 distinct outcome classes. Only {unique_outcomes_count} found. Cannot train.")
-        return False
-
-    if len(relevant_outcomes_df) < sequence_length + 1:
-        st.warning(f"Not enough historical rounds to train the AI model. Need at least {sequence_length + 1} rounds for training.")
-        return False
-
-    X = []
-    y = []
-
-    for deck_id, deck_df in relevant_outcomes_df.groupby('Deck_ID'):
-        outcomes_in_deck = deck_df['Outcome'].tolist()
-        for i in range(len(outcomes_in_deck) - sequence_length):
-            sequence = outcomes_in_deck[i : i + sequence_length]
-            next_outcome = outcomes_in_deck[i + sequence_length]
-            X.append(sequence)
-            y.append(next_outcome)
-
-    if not X or not y:
-        st.warning(f"Not enough data to form sequences for AI training. Need at least {sequence_length + 1} outcomes per deck with relevant types.")
-        return False
-
-    X_flat_strings = ["_".join(seq) for seq in X]
-
-    le = LabelEncoder()
-    # Fit the encoder on all *possible* outcome classes
-    le.fit(['Over 21', 'Under 21', 'Exactly 21']) # IMPORTANT: Ensure all classes are known
-
-    try:
-        X_encoded = le.transform(X_flat_strings)
-        y_encoded = le.transform(y)
-    except ValueError as e:
-        st.error(f"Error during encoding: {e}. This likely means an outcome appeared in X or y that the LabelEncoder was not fitted on. Ensure all historical outcomes are used to fit the encoder.")
-        return False
-
-    X_encoded = X_encoded.reshape(-1, 1)
-
-    st.info(f"Training AI model with {len(X)} samples from historical data...")
-    model = LogisticRegression(max_iter=1000, random_state=42)
-
+# Function to delete model files from Drive (ensure this exists and works)
+def delete_model_files_from_drive():
     gc, drive = get_gspread_and_drive_clients()
     if not drive:
-        st.error("Google Drive client not available. Cannot save AI model.")
-        return False
+        st.error("Could not connect to Google Drive to delete old model files.")
+        return
 
-    temp_model_path = MODEL_FILE
-    temp_encoder_path = ENCODER_FILE
+    # Replace with your actual folder ID
+    folder_id = "1CZepfjRZxWV_wfmEQuZLnbj9H2yAS9Ac" # Your specific folder ID
 
     try:
-        model.fit(X_encoded, y_encoded)
+        # Search for model files within the specified folder
+        file_list = drive.ListFile({'q': f"'{folder_id}' in parents and (title='prediction_model.joblib' or title='label_encoder.joblib') and trashed=false"}).GetList()
+        for file in file_list:
+            st.info(f"Deleting old model file: {file['title']} (ID: {file['id']})")
+            file.Delete()
+    except Exception as e:
+        st.error(f"Error deleting old model files from Google Drive: {e}")
 
-        with open(temp_model_path, "wb") as f:
-            joblib.dump(model, f)
-        with open(temp_encoder_path, "wb") as f:
-            joblib.dump(le, f)
+@st.cache_data # Use st.cache_data for functions that return dataframes
+def load_all_historical_rounds_from_sheet():
+    gc, _ = get_gspread_and_drive_clients()
+    if gc is None:
+        return pd.DataFrame() # Return empty DataFrame if client failed
 
-        model_folder_id = st.secrets.google_drive.model_folder_id
+    try:
+        spreadsheet = gc.open("Casino Card Game Log") # This needs to be the literal string
+        worksheet = spreadsheet.worksheet("Sheet1") # Assuming your sheet is named "Sheet1"
+        data = worksheet.get_all_records()
+        if data:
+            df = pd.DataFrame(data)
+            # Ensure column names are consistent
+            df.columns = df.columns.str.replace(' ', '_') # Replace spaces in column names with underscores
+            # --- NEW CLEANING STEP HERE ---
+            # Standardize the 'Outcome' column to expected values
+            df['Outcome'] = df['Outcome'].astype(str).str.strip() # Convert to string, remove whitespace
+            df['Outcome'] = df['Outcome'].replace({
+                "Over 21": "Over 21",
+                "Under 21": "Under 21",
+                "Exactly 21": "Exactly 21",
+                "Under 21_U": "Under 21", # Explicitly map the problematic value
+                "Under 21_1": "Under 21", # Map any other known problematic values
+                # Add more mappings if you discover other variations in your sheet
+            })
+            # Filter out any outcomes that are still not in our expected list after cleaning
+            valid_outcomes = ['Over 21', 'Under 21', 'Exactly 21']
+            df = df[df['Outcome'].isin(valid_outcomes)]
+            # --- END NEW CLEANING STEP ---
 
-        def upload_or_update_file(drive_client, local_file_path, drive_file_name, parent_folder_id):
-            file_list = drive_client.ListFile({
-                'q': f"'{parent_folder_id}' in parents and title='{drive_file_name}' and trashed=false"
-            }).GetList()
-            if file_list:
-                file = file_list[0]
-                file.SetContentFile(local_file_path)
-                file.Upload()
-                st.info(f"Updated '{drive_file_name}' on Google Drive in folder ID {parent_folder_id}.")
-            else:
-                file = drive_client.CreateFile({'title': drive_file_name, 'parents': [{'id': parent_folder_id}]})
-                file.SetContentFile(local_file_path)
-                file.Upload()
-                st.info(f"Uploaded new '{drive_file_name}' to Google Drive in folder ID {parent_folder_id}.")
+            return df
+        else:
+            return pd.DataFrame()
+    except SpreadsheetNotFound:
+        st.error(f"Google Sheet 'Casino Card Game Log' not found. Please ensure the sheet exists and the service account has access.")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error loading historical rounds from Google Sheet: {e}. Starting with empty history.")
+        return pd.DataFrame()
 
-        upload_or_update_file(drive, temp_model_path, MODEL_FILE, model_folder_id)
-        upload_or_update_file(drive, temp_encoder_path, ENCODER_FILE, model_folder_id)
+def train_and_save_prediction_model():
+    gc, drive = get_gspread_and_drive_clients()
+    if not (gc and drive):
+        st.error("AI model training failed. Could not connect to Google Cloud.")
+        return False
+
+    st.info("Preparing data for AI model training...")
+    all_rounds_df = load_all_historical_rounds_from_sheet()
+
+    if all_rounds_df.empty:
+        st.warning("No historical data available to train the AI model.")
+        delete_model_files_from_drive() # Clear any old models if data is empty
+        return False
+
+    # Filter for today's data (or whatever logic you prefer for training subset)
+    today = datetime.now().strftime("%Y-%m-%d")
+    # Ensure 'Timestamp' column is datetime type before filtering
+    all_rounds_df['Timestamp'] = pd.to_datetime(all_rounds_df['Timestamp'])
+    recent_rounds_df = all_rounds_df[all_rounds_df['Timestamp'].dt.strftime("%Y-%m-%d") == today].copy()
+
+    if len(recent_rounds_df) < 4: # You might want to adjust this threshold or remove for testing
+        st.warning(f"Not enough recent rounds data to train the AI model. Need at least 4 rounds from today. Found {len(recent_rounds_df)}.")
+        st.info("Cleared old AI model files due to insufficient data.")
+        delete_model_files_from_drive()
+        return False
+
+    # Extract features (X) and labels (y)
+    # Ensure relevant columns are numeric, coerce errors if necessary
+    for col in ['Card1', 'Card2', 'Card3', 'Sum']:
+        if col in recent_rounds_df.columns:
+            recent_rounds_df[col] = pd.to_numeric(recent_rounds_df[col], errors='coerce').fillna(0) # Handle non-numeric gracefully
+
+    X = recent_rounds_df[['Card1', 'Card2', 'Card3', 'Sum']]
+    y = recent_rounds_df['Outcome']
+
+    # Handle cases where 'y' might still contain unexpected values despite sheet cleaning (e.g., if cleaning fails)
+    # This is a fallback to ensure the LabelEncoder receives only expected labels
+    valid_outcomes = ['Over 21', 'Under 21', 'Exactly 21']
+    y = y[y.isin(valid_outcomes)] # Filter y to only valid outcomes BEFORE encoding
+
+    if y.empty:
+        st.error("No valid outcome data found for training after filtering. AI model training failed.")
+        delete_model_files_from_drive()
+        return False
+
+    # Initialize and fit the LabelEncoder
+    le = LabelEncoder()
+    # Fit the encoder on all *possible* outcome classes to avoid 'unseen labels' errors.
+    le.fit(['Over 21', 'Under 21', 'Exactly 21']) # THIS IS CRITICAL AND MUST BE EXACT.
+
+    try:
+        y_encoded = le.transform(y)
+    except ValueError as e:
+        st.error(f"Error during encoding: {e}. This likely means an outcome appeared in your data that the LabelEncoder was not fitted on. Ensure all historical outcomes are used to fit the encoder and data is clean.")
+        st.error("AI model training failed. See messages above.")
+        delete_model_files_from_drive()
+        return False
+
+    # Check if there are at least two unique classes for training
+    if len(pd.Series(y_encoded).unique()) < 2: # Use pd.Series to handle potentially empty or single-value numpy array
+        st.error(f"Error during AI model training or saving: This solver needs samples of at least 2 classes in the data, but the data contains only one class after encoding. Found: {le.inverse_transform(pd.Series(y_encoded).unique())}")
+        st.error("AI model training failed. See messages above.")
+        delete_model_files_from_drive() # Delete potentially corrupted models
+        return False
+
+    st.info(f"Training AI model with {len(recent_rounds_df)} samples from today's data...")
+
+    # Initialize and train the Logistic Regression model
+    model = LogisticRegression(max_iter=1000) # Increased max_iter for convergence
+    model.fit(X, y_encoded)
+
+    # Save the trained model and LabelEncoder to Google Drive
+    model_filename = "prediction_model.joblib"
+    encoder_filename = "label_encoder.joblib"
+    folder_id = "1CZepfjRZxWV_wfmEQuZLnbj9H2yAS9Ac" # Your specific folder ID
+
+    try:
+        # Check if files exist and delete before uploading new ones (important for retraining)
+        existing_files = drive.ListFile({'q': f"'{folder_id}' in parents and (title='{model_filename}' or title='{encoder_filename}') and trashed=false"}).GetList()
+        for file in existing_files:
+            st.info(f"Deleting existing file: {file['title']}")
+            file.Delete()
+
+        # Save model
+        joblib.dump(model, model_filename)
+        file_model = drive.CreateFile({'title': model_filename, 'parents': [{'id': folder_id}]})
+        file_model.SetContentFile(model_filename)
+        file_model.Upload()
+        os.remove(model_filename) # Clean up local file
+
+        # Save LabelEncoder
+        joblib.dump(le, encoder_filename)
+        file_encoder = drive.CreateFile({'title': encoder_filename, 'parents': [{'id': folder_id}]})
+        file_encoder.SetContentFile(encoder_filename)
+        file_encoder.Upload()
+        os.remove(encoder_filename) # Clean up local file
 
         st.success("AI prediction model trained and saved successfully to Google Drive!")
         return True
     except Exception as e:
-        st.error(f"Error during AI model training or saving to Google Drive: {str(e)}")
+        st.error(f"Error during AI model training or saving: {e}")
+        st.error("AI model training failed. See messages above.")
+        # Ensure cleanup if saving fails
+        if os.path.exists(model_filename): os.remove(model_filename)
+        if os.path.exists(encoder_filename): os.remove(encoder_filename)
         return False
-    finally:
-        if os.path.exists(temp_model_path):
-            os.remove(temp_model_path)
-        if os.path.exists(temp_encoder_path):
-            os.remove(temp_encoder_path)
 
 @st.cache_resource
 def load_ai_model():
