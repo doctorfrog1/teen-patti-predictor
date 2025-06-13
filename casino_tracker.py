@@ -5,10 +5,17 @@ import gspread
 from gspread.exceptions import SpreadsheetNotFound
 import os
 
-# --- NEW IMPORTS FOR AI ---
+# --- NEW IMPORTS FOR AI and Google Drive ---
 from sklearn.preprocessing import LabelEncoder
 from sklearn.linear_model import LogisticRegression
 import joblib # For saving/loading the model
+
+from pydrive2.auth import GoogleAuth
+from pydrive2.drive import GoogleDrive
+from google.oauth2.service_account import Credentials
+import io # For in-memory file handling (if needed, but direct file is better here)
+
+# ... (rest of your existing imports) ...
 
 # --- Configuration ---
 PLAYER_A_FIXED_CARDS_STR = {'J♣', '10♠', '9♠'} # Player A's fixed cards (assuming they are always out of play)
