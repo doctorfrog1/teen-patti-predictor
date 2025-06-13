@@ -128,7 +128,7 @@ def delete_model_files_from_drive():
     except Exception as e:
         st.error(f"Error deleting old model files from Google Drive: {e}")
 
-@st.cache_data # Use st.cache_data for functions that return dataframes
+# @st.cache_data # REMEMBER to add this decorator if it's not there!
 def load_all_historical_rounds_from_sheet():
     gc, _ = get_gspread_and_drive_clients()
     if gc is None:
@@ -142,25 +142,34 @@ def load_all_historical_rounds_from_sheet():
             df = pd.DataFrame(data)
             # Ensure column names are consistent
             df.columns = df.columns.str.replace(' ', '_') # Replace spaces in column names with underscores
-            # --- NEW CLEANING STEP HERE ---
-            # Standardize the 'Outcome' column to expected values
+
+            # --- START NEW AGGRESSIVE CLEANING STEP HERE ---
             df['Outcome'] = df['Outcome'].astype(str).str.strip() # Convert to string, remove whitespace
-            df['Outcome'] = df['Outcome'].replace({
-                "Over 21": "Over 21",
-                "Under 21": "Under 21",
-                "Exactly 21": "Exactly 21",
-                "Under 21_U": "Under 21", # Explicitly map the problematic value
-                "Under 21_1": "Under 21", # Map any other known problematic values
-                "Under 21_O": "Under 21",
+
+            # Create a temporary column to hold the standardized short form (O, U, E)
+            # This handles cases like "Under 21_O" by trying to extract the first char
+            df['Standard_Outcome_Char'] = df['Outcome'].apply(lambda x: {
+                "Over 21": "O",
+                "Under 21": "U",
+                "Exactly 21": "E"
+            }.get(x, x[0] if isinstance(x, str) and x and x[0] in ['O', 'U', 'E'] else None))
+            # .get(x, ...) means: if x is exactly "Over 21" etc, use "O" etc.
+            # else, if x is a string and not empty, and starts with O, U, or E, take its first char.
+            # else, assign None.
+
+            # Now, map these standardized chars back to the full strings
+            df['Outcome'] = df['Standard_Outcome_Char'].map({
                 "O": "Over 21",
                 "U": "Under 21",
-                "E": "Exactly 21",
-                # Add more mappings if you discover other variations in your sheet
+                "E": "Exactly 21"
             })
+            # Drop the temporary column
+            df = df.drop(columns=['Standard_Outcome_Char'])
+            # --- END NEW AGGRESSIVE CLEANING STEP ---
+
             # Filter out any outcomes that are still not in our expected list after cleaning
             valid_outcomes = ['Over 21', 'Under 21', 'Exactly 21']
             df = df[df['Outcome'].isin(valid_outcomes)]
-            # --- END NEW CLEANING STEP ---
 
             return df
         else:
@@ -171,7 +180,6 @@ def load_all_historical_rounds_from_sheet():
     except Exception as e:
         st.error(f"Error loading historical rounds from Google Sheet: {e}. Starting with empty history.")
         return pd.DataFrame()
-
 def train_and_save_prediction_model():
     gc, drive = get_gspread_and_drive_clients()
     if not (gc and drive):
