@@ -82,7 +82,12 @@ def get_gspread_and_drive_clients():
         creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
 
         gauth = GoogleAuth()
-        gauth.credentials = creds
+        gauth.auth_method = 'service'
+        gauth.service_account_json = creds_info # Pass the creds_info dict directly
+        gauth.LoadCredentialsFile = lambda: None # Prevent it from trying to load from file
+        gauth.SaveCredentialsFile = lambda: None # Prevent it from trying to save to file
+        gauth.Authenticate() # Authenticate to get the drive object
+        
         drive = GoogleDrive(gauth)
 
         return gc, drive
