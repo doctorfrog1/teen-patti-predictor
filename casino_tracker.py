@@ -98,7 +98,7 @@ def get_gspread_and_drive_clients():
         temp_creds_path = "gcp_service_account_creds_for_pydrive.json"
         with open(temp_creds_path, "w") as f:
             import json
-            json.dump(creds_dict, f)
+            json.dump(dict(creds_dict), f)
 
         gauth = GoogleAuth()
         gauth.settings = {
