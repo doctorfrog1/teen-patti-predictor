@@ -103,10 +103,18 @@ def get_gspread_and_drive_clients():
             json.dump(dict(creds_dict), f)
 
         gauth = GoogleAuth()
-        # CRITICAL FIX 2: Directly authenticate service account using the JSON file path
-        # This simplifies the pydrive2 authentication and avoids potential 'service_config' errors
-        gauth.ServiceAuth(service_account_json=temp_creds_path) 
-        
+        # CRITICAL FIX 2: Reverting to the standard pydrive2 Service Account setup
+        # This configures the service account JSON file path in settings
+        gauth.settings = {
+            'oauth_scope': scopes,
+            'client_config': {
+                'service_account': {
+                    'json_file': temp_creds_path
+                }
+            }
+        }
+        gauth.ServiceAuth() # Authenticate using the service account, NO arguments here
+
         drive = GoogleDrive(gauth)
 
         # Clean up the temporary file immediately
@@ -118,6 +126,7 @@ def get_gspread_and_drive_clients():
         st.error(f"Error loading Google Cloud credentials for Sheets/Drive: {e}. Please ensure st.secrets are configured correctly with service account details.")
         st.caption("For more info on Streamlit secrets: https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management")
         return None, None
+
         
 # Function to delete model files from Drive (ensure this exists and works)
 def delete_model_files_from_drive(drive_client, folder_id):
