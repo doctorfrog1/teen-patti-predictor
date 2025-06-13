@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import gspread
 from gspread.exceptions import SpreadsheetNotFound
 import os
-import json # Import json for writing credentials to a temp file
+# import json # No longer needed
 
 from sklearn.preprocessing import LabelEncoder
 from sklearn.linear_model import LogisticRegression
@@ -12,6 +12,9 @@ import joblib
 
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
+
+# NEW IMPORT REQUIRED FOR THIS METHOD
+from oauth2client.service_account import ServiceAccountCredentials
 
 
 # --- Configuration ---
@@ -72,40 +75,33 @@ ALL_CARDS = list(card_values.keys())
 @st.cache_resource
 def get_gspread_and_drive_clients():
     """Authenticates with Google Sheets and Google Drive using service account credentials."""
-    temp_creds_file = "service_account_key.json"
     try:
-        # Convert st.secrets.gcp_service_account (AttrDict) to a regular dictionary
+        # Get credentials as a standard dictionary from st.secrets
         creds_info = dict(st.secrets.gcp_service_account)
 
-        # Write credentials to a temporary file for pydrive2
-        with open(temp_creds_file, "w") as f:
-            json.dump(creds_info, f)
-
-        # For gspread
+        # For gspread (no change here, this part is robust)
         gc = gspread.service_account_from_dict(creds_info)
 
-        # For pydrive2
+        # For pydrive2: Authenticate using ServiceAccountCredentials directly
+        # Define the scopes for Google Drive and Google Sheets
+        scope = [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive'
+        ]
+
+        # Create credentials object from the service account info
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
+
+        # Initialize GoogleAuth with the credentials
         gauth = GoogleAuth()
-        # Set settings for service account auth using the temporary file
-        settings = {
-            "oauth_scope": [
-                'https://www.googleapis.com/auth/spreadsheets',
-                'https://www.googleapis.com/auth/drive'
-            ],
-            "client_config": {
-                "service_account": {
-                    "client_email": creds_info["client_email"],
-                    "client_id": creds_info["client_id"],
-                    "private_key_id": creds_info["private_key_id"],
-                    "private_key": creds_info["private_key"]
-                }
-            },
-            "save_credentials": False # Do not try to save credentials
-        }
-        gauth.attr = settings # Load settings from dictionary
-        # Now use LoadClientSecrets from the temporary file directly
-        gauth.LoadClientSecrets(temp_creds_file)
-        gauth.Authenticate() # Authenticate directly
+        gauth.credentials = creds
+
+        # Important: Prevent pydrive2 from trying to save or load credential files
+        gauth.LoadCredentialsFile = lambda: None
+        gauth.SaveCredentialsFile = lambda: None
+
+        # No need to call gauth.Authenticate() explicitly if credentials are set directly like this
+        # The GoogleDrive object will use the set credentials.
 
         drive = GoogleDrive(gauth)
 
@@ -113,12 +109,7 @@ def get_gspread_and_drive_clients():
     except Exception as e:
         st.error(f"Error loading Google Cloud credentials for Sheets/Drive: {e}. Please ensure st.secrets are configured correctly with service account details.")
         st.stop()
-        return None, None
-    finally:
-        # Clean up the temporary file
-        if os.path.exists(temp_creds_file):
-            os.remove(temp_creds_file)
-
+        return None, None # Ensure return None for both if error occurs
 
 def train_and_save_prediction_model(all_rounds_df, sequence_length=SEQUENCE_LENGTH):
     # Filter for outcomes relevant to prediction (Over 21, Under 21, Exactly 21)
