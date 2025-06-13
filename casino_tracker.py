@@ -290,7 +290,7 @@ def load_ai_model():
     download_encoder_path = ENCODER_FILE
 
     try:
-        model_folder_id = st.secrets.google_drive.model_folder_id
+        model_folder_id = "1CZepfjRZxWV_wfmEQuZLnbj9H2yAS9Ac"
 
         file_list = drive.ListFile({
             'q': f"'{model_folder_id}' in parents and title='{MODEL_FILE}' and trashed=false"
