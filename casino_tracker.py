@@ -5,10 +5,17 @@ import gspread
 from gspread.exceptions import SpreadsheetNotFound
 import os
 
-# --- NEW IMPORTS FOR AI ---
+# --- NEW IMPORTS FOR AI and Google Drive ---
 from sklearn.preprocessing import LabelEncoder
 from sklearn.linear_model import LogisticRegression
 import joblib # For saving/loading the model
+
+from pydrive2.auth import GoogleAuth
+from pydrive2.drive import GoogleDrive
+from google.oauth2.service_account import Credentials
+import io # For in-memory file handling (if needed, but direct file is better here)
+
+# ... (rest of your existing imports) ...
 
 # --- Configuration ---
 PLAYER_A_FIXED_CARDS_STR = {'J♣', '10♠', '9♠'} # Player A's fixed cards (assuming they are always out of play)
@@ -78,137 +85,154 @@ ALL_CARDS = list(card_values.keys())
 
 # Function to get gspread client from Streamlit secrets
 @st.cache_resource
-def get_gspread_client():
+def get_gspread_and_drive_clients():
     try:
-        gc = gspread.service_account_from_dict(st.secrets.gcp_service_account)
-        return gc
+        # Load credentials from st.secrets
+        creds_info = st.secrets.gcp_service_account
+
+        # Use credentials to authenticate gspread
+        gc = gspread.service_account_from_dict(creds_info)
+
+        # Authenticate PyDrive2 with the same service account
+        # Define scopes for Drive access
+        scopes = [
+            'https://www.googleapis.com/auth/spreadsheets', # For gspread
+            'https://www.googleapis.com/auth/drive'         # For PyDrive2
+        ]
+        creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+
+        gauth = GoogleAuth()
+        gauth.credentials = creds
+        drive = GoogleDrive(gauth)
+
+        return gc, drive
     except Exception as e:
-        st.error(f"Error loading Google Sheets credentials: {e}. Please ensure st.secrets are configured.")
+        st.error(f"Error loading Google Cloud credentials for Sheets/Drive: {e}. Please ensure st.secrets are configured correctly with service account details.")
         st.stop() # Stop the app if credentials are not loaded
-        return None
+        return None, None # Return None for both clients on error
 
 # --- NEW: AI Model Training Function (Modified for Daily Learning & Direct File I/O) ---
 def train_and_save_prediction_model(all_rounds_df, sequence_length=SEQUENCE_LENGTH):
-    """
-    Trains a Logistic Regression model on recent (today's) outcomes and saves it using direct file I/O.
-    """
-    # Filter data for today's outcomes
-    today = datetime.now().date()
-    if 'Timestamp' in all_rounds_df.columns:
-        all_rounds_df['Timestamp'] = pd.to_datetime(all_rounds_df['Timestamp'])
-        daily_rounds_df = all_rounds_df[all_rounds_df['Timestamp'].dt.date == today].copy()
-    else:
-        daily_rounds_df = pd.DataFrame() # No timestamp, cannot filter
-
-    st.info(f"Preparing data for AI model training from {len(daily_rounds_df)} rounds played today ({today})...")
-    if daily_rounds_df.empty or len(daily_rounds_df) < sequence_length + 1:
-        st.warning(f"Not enough recent rounds data to train the AI model. Need at least {sequence_length + 1} rounds from today.")
-        
-        # Construct full paths to the model files
-        model_path = os.path.join(MODEL_DIR, MODEL_FILE)
-        encoder_path = os.path.join(MODEL_DIR, ENCODER_FILE)
-
-        try:
-            # Use standard Python file operations for deletion
-            if os.path.exists(model_path): os.remove(model_path)
-            if os.path.exists(encoder_path): os.remove(encoder_path)
-            st.info("Cleared old AI model files due to insufficient data.")
-        except Exception:
-            pass # Ignore if deletion fails or files don't exist
-        return False # Indicate training failed
-
-    # 1. Prepare data: Create sequences (features) and target outcomes (labels)
-    features = []
-    labels = []
-    outcomes = daily_rounds_df['Outcome'].tolist()
-
-    for i in range(len(outcomes) - sequence_length):
-        features.append(outcomes[i : i + sequence_length])
-        labels.append(outcomes[i + sequence_length])
-
-    if not features:
-        st.warning(f"Not enough sequences generated from today's data ({len(outcomes)} outcomes, sequence length {sequence_length}).")
-        return False
-
-    # 2. Encoding categorical data
-    le = LabelEncoder()
-    all_possible_outcomes = list(set(outcomes + ['Over 21', 'Under 21', 'Exactly 21']))
-    le.fit(all_possible_outcomes)
-
-    encoded_features = []
-    for seq in features:
-        encoded_features.append(le.transform(seq))
-    encoded_labels = le.transform(labels)
-
-    X = pd.DataFrame(encoded_features)
-    y = encoded_labels
+    # ... (Your existing code for preparing data and training model/encoder) ...
 
     st.info(f"Training AI model with {len(X)} samples from today's data...")
     model = LogisticRegression(max_iter=1000, random_state=42)
+
+    # Get Google Sheets and Drive clients
+    gc, drive = get_gspread_and_drive_clients()
+    if not drive:
+        st.error("Google Drive client not available. Cannot save AI model.")
+        return False
+
+    # Define temporary local paths for saving before upload
+    temp_model_path = MODEL_FILE # You can keep these names or make them more temporary
+    temp_encoder_path = ENCODER_FILE
+
     try:
         model.fit(X, y)
 
-        # Construct full paths to the model files
-        model_path = os.path.join(MODEL_DIR, MODEL_FILE)
-        encoder_path = os.path.join(MODEL_DIR, ENCODER_FILE)
-
-        # Ensure the directory exists before writing
-        os.makedirs(MODEL_DIR, exist_ok=True)
-
-        # Save the trained model and encoder using standard Python file operations
-        with open(model_path, "wb") as f:
+        # Save model and encoder to temporary local files first
+        with open(temp_model_path, "wb") as f:
             joblib.dump(model, f)
-        with open(encoder_path, "wb") as f:
+        with open(temp_encoder_path, "wb") as f:
             joblib.dump(le, f)
 
-        st.success("AI prediction model trained and saved successfully to Streamlit App Data!")
+        # Get the folder ID from secrets
+        model_folder_id = st.secrets.google_drive.model_folder_id
+
+        # Function to upload/update a file in Google Drive
+        def upload_or_update_file(drive_client, local_file_path, drive_file_name, parent_folder_id):
+            # Search for the file within the specific folder
+            file_list = drive_client.ListFile({
+                'q': f"'{parent_folder_id}' in parents and title='{drive_file_name}' and trashed=false"
+            }).GetList()
+
+            if file_list:
+                # File exists, update it
+                file = file_list[0]
+                file.SetContentFile(local_file_path)
+                file.Upload()
+                st.info(f"Updated '{drive_file_name}' on Google Drive in folder ID {parent_folder_id}.")
+            else:
+                # File does not exist, create it
+                file = drive_client.CreateFile({'title': drive_file_name, 'parents': [{'id': parent_folder_id}]})
+                file.SetContentFile(local_file_path)
+                file.Upload()
+                st.info(f"Uploaded new '{drive_file_name}' to Google Drive in folder ID {parent_folder_id}.")
+
+        # Upload the model and encoder files
+        upload_or_update_file(drive, temp_model_path, MODEL_FILE, model_folder_id)
+        upload_or_update_file(drive, temp_encoder_path, ENCODER_FILE, model_folder_id)
+
+        st.success("AI prediction model trained and saved successfully to Google Drive!")
         return True
     except Exception as e:
-        st.error(f"Error during AI model training or saving: {e}")
+        st.error(f"Error during AI model training or saving to Google Drive: {str(e)}")
         return False
-
+    finally:
+        # Clean up temporary local files
+        if os.path.exists(temp_model_path):
+            os.remove(temp_model_path)
+        if os.path.exists(temp_encoder_path):
+            os.remove(temp_encoder_path)
 # --- NEW: AI Model Loading Function (Modified for Direct File I/O) ---
 @st.cache_resource
 def load_ai_model():
-    # Keep debug prints temporarily to confirm no more connection issues
-    st.write("--- Debugging st.secrets ---")
-    st.write(f"st.secrets content: {st.secrets}")
-
-    if "connections" in st.secrets:
-        st.write(f"st.secrets['connections'] content: {st.secrets['connections']}")
-        if "my_data" in st.secrets["connections"]:
-            st.write(f"st.secrets['connections']['my_data'] content: {st.secrets['connections']['my_data']}")
-            if "type" in st.secrets["connections"]["my_data"]:
-                st.write("Found 'type' key in my_data connection!")
-            else:
-                st.write("ERROR: 'type' key NOT found in my_data connection despite being in secrets.toml!")
-        else:
-            st.write("ERROR: 'my_data' connection NOT found in st.secrets['connections']!")
-    else:
-        st.write("ERROR: 'connections' section NOT found in st.secrets!")
-
-    st.write("--- End Debugging st.secrets ---")
-
     model = None
     le = None
 
-    # Construct full paths to the model files
-    model_path = os.path.join(MODEL_DIR, MODEL_FILE)
-    encoder_path = os.path.join(MODEL_DIR, ENCODER_FILE)
+    # Get Google Sheets and Drive clients
+    gc, drive = get_gspread_and_drive_clients()
+    if not drive:
+        st.sidebar.error("Google Drive client not available. Cannot load AI model.")
+        return None, None
+
+    # Define temporary local paths for downloaded files
+    download_model_path = MODEL_FILE # Will download to app's working directory
+    download_encoder_path = ENCODER_FILE
 
     try:
-        # Use standard Python file operations instead of st.connection
-        if os.path.exists(model_path) and os.path.exists(encoder_path):
-            with open(model_path, "rb") as f:
-                model = joblib.load(f)
-            with open(encoder_path, "rb") as f:
-                le = joblib.load(f)
-            st.sidebar.success("AI Prediction Model Loaded.")
-        else:
-            st.sidebar.warning("AI Prediction Model files not found. Please train the model first.")
+        model_folder_id = st.secrets.google_drive.model_folder_id
+
+        # Download model file
+        file_list = drive.ListFile({
+            'q': f"'{model_folder_id}' in parents and title='{MODEL_FILE}' and trashed=false"
+        }).GetList()
+        if not file_list:
+            st.sidebar.warning(f"AI Prediction Model '{MODEL_FILE}' not found on Google Drive in folder ID {model_folder_id}.")
+            return None, None
+        file = file_list[0]
+        file.GetContentFile(download_model_path)
+
+        # Download encoder file
+        file_list_encoder = drive.ListFile({
+            'q': f"'{model_folder_id}' in parents and title='{ENCODER_FILE}' and trashed=false"
+        }).GetList()
+        if not file_list_encoder:
+            st.sidebar.warning(f"Label Encoder '{ENCODER_FILE}' not found on Google Drive in folder ID {model_folder_id}.")
+            # Clean up potentially downloaded model if encoder is missing
+            if os.path.exists(download_model_path): os.remove(download_model_path)
+            return None, None
+        file_encoder = file_list_encoder[0]
+        file_encoder.GetContentFile(download_encoder_path)
+
+        # Load from local downloaded files
+        with open(download_model_path, "rb") as f:
+            model = joblib.load(f)
+        with open(download_encoder_path, "rb") as f:
+            le = joblib.load(f)
+
+        st.sidebar.success("AI Prediction Model Loaded from Google Drive.")
+        return model, le
     except Exception as e:
-        st.sidebar.error(f"Error loading AI model from Streamlit App Data: {e}")
-    return model, le
+        st.sidebar.error(f"Error loading AI model from Google Drive: {str(e)}")
+        return None, None
+    finally:
+        # Clean up temporary downloaded files
+        if os.path.exists(download_model_path):
+            os.remove(download_model_path)
+        if os.path.exists(download_encoder_path):
+            os.remove(download_encoder_path)
 
 # --- NEW: Function to load all rounds from sheet for training ---
 def load_all_historical_rounds_from_sheet():
