@@ -3,15 +3,60 @@ import pandas as pd
 from datetime import datetime, timedelta
 import gspread
 from gspread.exceptions import SpreadsheetNotFound
-import os
+import os # Keep this for local file operations like model saving
+import joblib
 
+# Ensure this is at the top with other imports: import os
+
+# Function to save AI model and label encoder locally
+def save_ai_model(model, label_encoder):
+    try:
+        # Define local file paths
+        model_path = 'prediction_model.joblib'
+        encoder_path = 'label_encoder.joblib'
+
+        # Save the model and encoder
+        joblib.dump(model, model_path)
+        joblib.dump(label_encoder, encoder_path)
+
+        st.success("AI prediction model trained and saved successfully to Streamlit App Data (local files).")
+        return True
+    except Exception as e:
+        st.error(f"Error saving AI model locally: {e}")
+        return False
+
+# Function to load AI model and label encoder locally
+def load_ai_model():
+    try:
+        model_path = 'prediction_model.joblib'
+        encoder_path = 'label_encoder.joblib'
+
+        if os.path.exists(model_path) and os.path.exists(encoder_path):
+            model = joblib.load(model_path)
+            encoder = joblib.load(encoder_path)
+            st.session_state.ai_model = model
+            st.session_state.label_encoder = encoder
+            st.sidebar.success("AI Prediction Model Loaded from local files.")
+            return True
+        else:
+            st.sidebar.warning("AI Prediction Model files not found locally. Please train the model first.")
+            return False
+    except Exception as e:
+        st.sidebar.error(f"Error loading AI model locally: {e}")
+        return False
+        
+# Machine Learning imports
 from sklearn.preprocessing import LabelEncoder
 from sklearn.linear_model import LogisticRegression
 import joblib
 
-from pydrive2.auth import GoogleAuth
-from pydrive2.drive import GoogleDrive
-from oauth2client.service_account import ServiceAccountCredentials # Ensure this is imported
+# Correct Google Authentication import for service accounts
+from google.oauth2.service_account import Credentials # THIS IS THE NEW/CORRECT ONE
+
+# REMOVE these if they are present, as they are likely conflicting:
+# from pydrive2.auth import GoogleAuth
+# from pydrive2.drive import GoogleDrive
+# from oauth2client.service_account import ServiceAccountCredentials # This is the old one
 
 
 
@@ -70,6 +115,7 @@ ALL_CARDS = list(card_values.keys())
 
 # --- HELPER FUNCTIONS ---
 
+@st.cache_resource # Use st.cache_resource for objects like gspread clients
 def get_gspread_and_drive_clients():
     try:
         # Check if secrets exist
@@ -81,28 +127,25 @@ def get_gspread_and_drive_clients():
         creds_dict = st.secrets["gcp_service_account"]
 
         # Define the required scopes for Google Sheets and Drive
-        # 'https://www.googleapis.com/auth/drive' is needed for listing/creating files.
-        # 'https://www.googleapis.com/auth/spreadsheets' is specifically for Sheets.
         scopes = [
             'https://www.googleapis.com/auth/spreadsheets',
-            'https://www.googleapis.com/auth/drive'
+            'https://www.googleapis.com/auth/drive' # 'drive' scope is needed for listing/creating
         ]
 
-        # Create Credentials object
+        # Create Credentials object from the service account info
         credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 
         # Authorize gspread client
         gc = gspread.authorize(credentials)
-        # st.write("gspread client authorized.") # Debug: confirm client authorized
 
-        # Return both clients
-        return gc, None # Drive client often not directly needed if gspread handles it for sheet access
+        # We are no longer returning a separate drive_client from pydrive2
+        # gspread.authorize(credentials) should handle necessary Drive interactions for Sheets.
+        return gc, None # Return gspread client and None for drive_client
 
     except Exception as e:
         st.error(f"Error loading Google Cloud credentials for Sheets/Drive: {e}. Please ensure st.secrets are configured correctly with service account details.")
         st.caption("For more info on Streamlit secrets: https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management")
         return None, None
-# --- End of the corrected get_gspread_and_drive_clients function ---
 
 # Function to delete model files from Drive (ensure this exists and works)
 def delete_model_files_from_drive():
@@ -191,110 +234,123 @@ def load_all_historical_rounds_from_sheet():
         return pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
         
 def train_and_save_prediction_model():
-    gc, drive = get_gspread_and_drive_clients()
-    if not (gc and drive):
-        st.error("AI model training failed. Could not connect to Google Cloud.")
+    # Only need gspread client for loading data
+    gc, _ = get_gspread_and_drive_clients() # Drive client is now None
+
+    if gc is None:
+        st.error("AI model training failed. Could not connect to Google Sheets.")
         return False
 
     st.info("Preparing data for AI model training...")
-    all_rounds_df = load_all_historical_rounds_from_sheet()
+    all_rounds_df = load_all_historical_rounds_from_sheet() # This function should have the strong cleaning logic
 
     if all_rounds_df.empty:
         st.warning("No historical data available to train the AI model.")
-        delete_model_files_from_drive() # Clear any old models if data is empty
+        # No need to call delete_model_files_from_drive() if we are saving locally
         return False
 
-    # Filter for today's data (or whatever logic you prefer for training subset)
-    today = datetime.now().strftime("%Y-%m-%d")
+    # Filter for today's data (if you still want this specific filter)
     # Ensure 'Timestamp' column is datetime type before filtering
-    all_rounds_df['Timestamp'] = pd.to_datetime(all_rounds_df['Timestamp'])
-    recent_rounds_df = all_rounds_df[all_rounds_df['Timestamp'].dt.strftime("%Y-%m-%d") == today].copy()
+    # The load_all_historical_rounds_from_sheet() should already ensure Timestamp is datetime.
+    # Add a check here just in case:
+    if 'Timestamp' in all_rounds_df.columns:
+        all_rounds_df['Timestamp'] = pd.to_datetime(all_rounds_df['Timestamp'], errors='coerce')
+        # Drop rows where Timestamp conversion failed
+        all_rounds_df.dropna(subset=['Timestamp'], inplace=True)
+        today = datetime.now().strftime("%Y-%m-%d")
+        recent_rounds_df = all_rounds_df[all_rounds_df['Timestamp'].dt.strftime("%Y-%m-%d") == today].copy()
+    else:
+        st.warning("No 'Timestamp' column found in historical data. Training on all available data.")
+        recent_rounds_df = all_rounds_df.copy() # Train on all data if no timestamp column
 
-    if len(recent_rounds_df) < 4: # You might want to adjust this threshold or remove for testing
-        st.warning(f"Not enough recent rounds data to train the AI model. Need at least 4 rounds from today. Found {len(recent_rounds_df)}.")
-        st.info("Cleared old AI model files due to insufficient data.")
-        delete_model_files_from_drive()
-        return False
+    # MIN_ROUNDS_FOR_TRAINING = 4 # You might want to adjust this threshold or remove for testing
+    # If you want to train on ALL data available in the sheet, simply use all_rounds_df
+    # For now, let's keep your 'recent_rounds_df' logic but make sure it handles empty or few rows gracefully.
+    MIN_ROUNDS_FOR_TRAINING = 4
+    if len(recent_rounds_df) < MIN_ROUNDS_FOR_TRAINING:
+        st.warning(f"Not enough recent rounds data to train the AI model. Need at least {MIN_ROUNDS_FOR_TRAINING} rounds from today. Found {len(recent_rounds_df)}. Training on ALL available data instead.")
+        # If not enough recent data, fall back to using ALL data
+        recent_rounds_df = all_rounds_df.copy()
+        # Re-check minimum for all data
+        if len(recent_rounds_df) < MIN_ROUNDS_FOR_TRAINING:
+            st.warning(f"Still not enough total historical data. Need at least {MIN_ROUNDS_FOR_TRAINING} rounds. Found {len(recent_rounds_df)}.")
+            return False
+
 
     # Extract features (X) and labels (y)
     # Ensure relevant columns are numeric, coerce errors if necessary
     for col in ['Card1', 'Card2', 'Card3', 'Sum']:
         if col in recent_rounds_df.columns:
-            recent_rounds_df[col] = pd.to_numeric(recent_rounds_df[col], errors='coerce').fillna(0) # Handle non-numeric gracefully
+            # Convert to numeric, replace non-numeric with NaN, then fill NaN with 0 (or a suitable default)
+            recent_rounds_df[col] = pd.to_numeric(recent_rounds_df[col], errors='coerce').fillna(0)
+        else:
+            # If a critical column is missing, fill with zeros or handle as an error
+            st.warning(f"Missing column '{col}'. Filling with zeros for training.")
+            recent_rounds_df[col] = 0
+
+
+    # Drop any rows where features might have become NaN if input data was severely corrupted
+    recent_rounds_df.dropna(subset=['Card1', 'Card2', 'Card3', 'Sum'], inplace=True)
 
     X = recent_rounds_df[['Card1', 'Card2', 'Card3', 'Sum']]
     y = recent_rounds_df['Outcome']
 
-    # Handle cases where 'y' might still contain unexpected values despite sheet cleaning (e.g., if cleaning fails)
-    # This is a fallback to ensure the LabelEncoder receives only expected labels
+    # Filter y to only valid outcomes BEFORE encoding
     valid_outcomes = ['Over 21', 'Under 21', 'Exactly 21']
-    y = y[y.isin(valid_outcomes)] # Filter y to only valid outcomes BEFORE encoding
+    y = y[y.isin(valid_outcomes)]
 
-    if y.empty:
-        st.error("No valid outcome data found for training after filtering. AI model training failed.")
-        delete_model_files_from_drive()
+    # After filtering X and y, check if they are still aligned and not empty
+    if X.empty or y.empty or len(X) != len(y):
+        st.error("After data preparation, features (X) or outcomes (y) are empty or mismatched. AI model training failed.")
         return False
+
 
     # Initialize and fit the LabelEncoder
     le = LabelEncoder()
     # Fit the encoder on all *possible* outcome classes to avoid 'unseen labels' errors.
-    le.fit(['Over 21', 'Under 21', 'Exactly 21']) # THIS IS CRITICAL AND MUST BE EXACT.
+    # This is crucial for consistent encoding.
+    try:
+        le.fit(['Over 21', 'Under 21', 'Exactly 21']) # Ensure these are the only expected outcomes
+    except Exception as e:
+        st.error(f"Error fitting LabelEncoder: {e}. Check expected outcomes.")
+        return False
 
     try:
         y_encoded = le.transform(y)
     except ValueError as e:
-        st.error(f"Error during encoding: {e}. This likely means an outcome appeared in your data that the LabelEncoder was not fitted on. Ensure all historical outcomes are used to fit the encoder and data is clean.")
+        st.error(f"Error during encoding: {e}. This likely means an outcome appeared in your data that the LabelEncoder was not fitted on. Ensure your sheet data is clean and matches expected outcomes ('Over 21', 'Under 21', 'Exactly 21').")
         st.error("AI model training failed. See messages above.")
-        delete_model_files_from_drive()
         return False
 
     # Check if there are at least two unique classes for training
-    if len(pd.Series(y_encoded).unique()) < 2: # Use pd.Series to handle potentially empty or single-value numpy array
-        st.error(f"Error during AI model training or saving: This solver needs samples of at least 2 classes in the data, but the data contains only one class after encoding. Found: {le.inverse_transform(pd.Series(y_encoded).unique())}")
-        st.error("AI model training failed. See messages above.")
-        delete_model_files_from_drive() # Delete potentially corrupted models
+    if len(pd.Series(y_encoded).unique()) < 2:
+        st.error(f"Error during AI model training: This solver needs samples of at least 2 classes in the data, but the data contains only one class after encoding. Found: {le.inverse_transform(pd.Series(y_encoded).unique())}")
+        st.error("AI model training failed. Please ensure your Google Sheet has rounds with different outcomes (e.g., 'Over 21' AND 'Under 21').")
         return False
 
-    st.info(f"Training AI model with {len(recent_rounds_df)} samples from today's data...")
+    st.info(f"Training AI model with {len(X)} samples.")
 
     # Initialize and train the Logistic Regression model
-    model = LogisticRegression(max_iter=1000) # Increased max_iter for convergence
-    model.fit(X, y_encoded)
-
-    # Save the trained model and LabelEncoder to Google Drive
-    model_filename = "prediction_model.joblib"
-    encoder_filename = "label_encoder.joblib"
-    folder_id = "1CZepfjRZxWV_wfmEQuZLnbj9H2yAS9Ac" # Your specific folder ID
-
+    model = LogisticRegression(max_iter=1000, random_state=42) # Added random_state for reproducibility
     try:
-        # Check if files exist and delete before uploading new ones (important for retraining)
-        existing_files = drive.ListFile({'q': f"'{folder_id}' in parents and (title='{model_filename}' or title='{encoder_filename}') and trashed=false"}).GetList()
-        for file in existing_files:
-            st.info(f"Deleting existing file: {file['title']}")
-            file.Delete()
-
-        # Save model
-        joblib.dump(model, model_filename)
-        file_model = drive.CreateFile({'title': model_filename, 'parents': [{'id': folder_id}]})
-        file_model.SetContentFile(model_filename)
-        file_model.Upload()
-        os.remove(model_filename) # Clean up local file
-
-        # Save LabelEncoder
-        joblib.dump(le, encoder_filename)
-        file_encoder = drive.CreateFile({'title': encoder_filename, 'parents': [{'id': folder_id}]})
-        file_encoder.SetContentFile(encoder_filename)
-        file_encoder.Upload()
-        os.remove(encoder_filename) # Clean up local file
-
-        st.success("AI prediction model trained and saved successfully to Google Drive!")
-        return True
+        model.fit(X, y_encoded)
     except Exception as e:
-        st.error(f"Error during AI model training or saving: {e}")
-        st.error("AI model training failed. See messages above.")
-        # Ensure cleanup if saving fails
-        if os.path.exists(model_filename): os.remove(model_filename)
-        if os.path.exists(encoder_filename): os.remove(encoder_filename)
+        st.error(f"Error during model fitting (Logistic Regression): {e}")
+        st.error("AI model training failed.")
+        return False
+
+    st.session_state.ai_model = model
+    st.session_state.label_encoder = le # Store the fitted label encoder
+
+    # --- THIS IS THE NEW MODEL SAVING LOGIC (LOCAL) ---
+    success = save_ai_model(model, le) # Call the function that saves locally
+    # --- END NEW MODEL SAVING LOGIC ---
+
+    if success:
+        st.success("AI prediction model trained and loaded into session state!")
+        return True
+    else:
+        st.error("Failed to save AI model. Training complete but model not persistently stored.")
         return False
 
 @st.cache_resource
