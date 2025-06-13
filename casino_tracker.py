@@ -128,34 +128,31 @@ def delete_model_files_from_drive():
     except Exception as e:
         st.error(f"Error deleting old model files from Google Drive: {e}")
 
-# @st.cache_data # REMEMBER to add this decorator if it's not there!
+# @st.cache_data # <-- UNCOMMENT THIS LINE if it's commented out in your file.
 def load_all_historical_rounds_from_sheet():
     gc, _ = get_gspread_and_drive_clients()
     if gc is None:
-        return pd.DataFrame() # Return empty DataFrame if client failed
+        # Return empty DataFrame with all expected columns if client failed
+        return pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
 
     try:
-        spreadsheet = gc.open("Casino Card Game Log") # This needs to be the literal string
-        worksheet = spreadsheet.worksheet("Sheet1") # Assuming your sheet is named "Sheet1"
+        spreadsheet = gc.open("Casino Card Game Log")
+        worksheet = spreadsheet.worksheet("Sheet1")
         data = worksheet.get_all_records()
         if data:
             df = pd.DataFrame(data)
             # Ensure column names are consistent
-            df.columns = df.columns.str.replace(' ', '_') # Replace spaces in column names with underscores
+            df.columns = df.columns.str.replace(' ', '_')
 
-            # --- START NEW AGGRESSIVE CLEANING STEP HERE ---
+            # --- AGGRESSIVE CLEANING FOR 'Outcome' COLUMN ---
             df['Outcome'] = df['Outcome'].astype(str).str.strip() # Convert to string, remove whitespace
 
             # Create a temporary column to hold the standardized short form (O, U, E)
-            # This handles cases like "Under 21_O" by trying to extract the first char
             df['Standard_Outcome_Char'] = df['Outcome'].apply(lambda x: {
                 "Over 21": "O",
                 "Under 21": "U",
                 "Exactly 21": "E"
             }.get(x, x[0] if isinstance(x, str) and x and x[0] in ['O', 'U', 'E'] else None))
-            # .get(x, ...) means: if x is exactly "Over 21" etc, use "O" etc.
-            # else, if x is a string and not empty, and starts with O, U, or E, take its first char.
-            # else, assign None.
 
             # Now, map these standardized chars back to the full strings
             df['Outcome'] = df['Standard_Outcome_Char'].map({
@@ -165,21 +162,39 @@ def load_all_historical_rounds_from_sheet():
             })
             # Drop the temporary column
             df = df.drop(columns=['Standard_Outcome_Char'])
-            # --- END NEW AGGRESSIVE CLEANING STEP ---
+            # --- END AGGRESSIVE CLEANING ---
 
             # Filter out any outcomes that are still not in our expected list after cleaning
             valid_outcomes = ['Over 21', 'Under 21', 'Exactly 21']
             df = df[df['Outcome'].isin(valid_outcomes)]
 
+            # Ensure Deck_ID is handled correctly, even if it wasn't in original data or was problematic
+            if 'Deck_ID' in df.columns:
+                df['Deck_ID'] = pd.to_numeric(df['Deck_ID'], errors='coerce').fillna(1).astype(int)
+            else:
+                df['Deck_ID'] = 1 # Default to 1 if not found
+
+            # Ensure 'Timestamp' is datetime type for consistency
+            if 'Timestamp' in df.columns:
+                # Coerce errors will turn invalid dates into NaT (Not a Time)
+                df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
+                # Fill NaT with a default timestamp if needed (e.g., yesterday)
+                df['Timestamp'] = df['Timestamp'].fillna(datetime.now() - timedelta(days=1))
+            else:
+                # If timestamp column is missing, assign a default
+                df['Timestamp'] = datetime.now() - timedelta(days=1)
+
             return df
         else:
-            return pd.DataFrame()
+            # Return empty DataFrame with all expected columns if no data found
+            return pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
     except SpreadsheetNotFound:
         st.error(f"Google Sheet 'Casino Card Game Log' not found. Please ensure the sheet exists and the service account has access.")
-        return pd.DataFrame()
+        return pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
     except Exception as e:
         st.error(f"Error loading historical rounds from Google Sheet: {e}. Starting with empty history.")
-        return pd.DataFrame()
+        return pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
+        
 def train_and_save_prediction_model():
     gc, drive = get_gspread_and_drive_clients()
     if not (gc and drive):
@@ -340,30 +355,7 @@ def load_ai_model():
         if os.path.exists(download_encoder_path):
             os.remove(download_encoder_path)
 
-def load_all_historical_rounds_from_sheet():
-    gc, _ = get_gspread_and_drive_clients() # Corrected
-    if not gc:
-        return pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
 
-    try:
-        spreadsheet = gc.open("Casino Card Game Log")
-        worksheet = spreadsheet.worksheet("Sheet1")
-        data = worksheet.get_all_records()
-        if data:
-            df = pd.DataFrame(data)
-            if 'Deck_ID' in df.columns:
-                df['Deck_ID'] = pd.to_numeric(df['Deck_ID'], errors='coerce').fillna(1).astype(int)
-            else:
-                df['Deck_ID'] = 1
-            return df
-        else:
-            return pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
-    except SpreadsheetNotFound:
-        st.error("Google Sheet 'Casino Card Game Log' not found. Please ensure it exists and is shared with the service account.")
-        return pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
-    except Exception as e:
-        st.error(f"Error loading all historical rounds from Google Sheet: {e}")
-        return pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
 
 def load_rounds():
     gc, _ = get_gspread_and_drive_clients() # Corrected
@@ -711,43 +703,64 @@ if not st.session_state.rounds.empty:
     ai_model_prediction_attempted = False
     ai_model_prediction_error_occurred = False
 
-    if st.session_state.ai_model and st.session_state.label_encoder and len(current_deck_outcomes) >= SEQUENCE_LENGTH:
-        ai_model_prediction_attempted = True
-        st.markdown("---")
-        st.subheader("AI Model's Prediction")
-        try:
-            last_n_outcomes = current_deck_outcomes[-SEQUENCE_LENGTH:]
+    # The AI model predicts based on the *current hand* (Card1, Card2, Card3, Sum),
+# not based on a sequence of previous outcomes.
+# So, we need the inputs for the *current* selection
+ai_model_prediction_attempted = False
+ai_model_prediction_error_occurred = False
 
-            # Ensure all outcomes in last_n_outcomes are known to the encoder
-            known_outcomes = st.session_state.label_encoder.classes_
-            if not all(outcome in known_outcomes for outcome in last_n_outcomes):
-                st.warning("AI model cannot predict: Unknown outcomes in the recent sequence. Retrain model with more diverse data.")
-                ai_model_prediction_error_occurred = True
-            else:
-                # Need to join the sequence for transformation as it was trained on joined strings
-                encoded_last_n = st.session_state.label_encoder.transform(["_".join(last_n_outcomes)]).reshape(1, -1)
+# Only attempt AI prediction if all 3 cards are selected AND the model is loaded
+# The 'card1', 'card2', 'card3' variables are from your "Enter Round Details" section at the top.
+# They hold the currently selected cards for the *next* round to be played.
+if card1 and card2 and card3 and st.session_state.ai_model and st.session_state.label_encoder:
+    ai_model_prediction_attempted = True
+    st.markdown("---")
+    st.subheader("AI Model's Prediction for the *current hand*") # Changed text for clarity
+    try:
+        # Re-calculate total here using selected cards to ensure it's up-to-date
+        # These values (card_values[card1], current_total) are the FEATURES for the prediction
+        current_total = card_values[card1] + card_values[card2] + card_values[card3]
 
-                predicted_encoded_outcome = st.session_state.ai_model.predict(encoded_last_n)[0]
-                predicted_outcome_ai = st.session_state.label_encoder.inverse_transform([predicted_encoded_outcome])[0]
+        # Create a DataFrame with the current hand's features, matching training X
+        # The model expects columns: 'Card1', 'Card2', 'Card3', 'Sum'
+        current_hand_features = pd.DataFrame({
+            'Card1': [card_values[card1]], # Value of the first selected card
+            'Card2': [card_values[card2]], # Value of the second selected card
+            'Card3': [card_values[card3]], # Value of the third selected card
+            'Sum': [current_total]          # Sum of the selected cards
+        })
 
-                probabilities = st.session_state.ai_model.predict_proba(encoded_last_n)[0]
-                # Find the probability for the predicted outcome
-                confidence_ai = probabilities[st.session_state.label_encoder.transform([predicted_outcome_ai])[0]] * 100
+        # Make the prediction using the current hand's features
+        predicted_encoded_outcome = st.session_state.ai_model.predict(current_hand_features)
+        predicted_outcome_ai = st.session_state.label_encoder.inverse_transform(predicted_encoded_outcome)[0]
 
-                st.markdown(f"🤖 **AI Model Prediction:** ➡️ **{predicted_outcome_ai}** (Confidence: {confidence_ai:.1f}%)")
-                st.caption(f"Based on the last {SEQUENCE_LENGTH} outcomes: {', '.join(last_n_outcomes)}")
+        # Get probabilities
+        probabilities = st.session_state.ai_model.predict_proba(current_hand_features)[0] # <--- Use current_hand_features here too!
+        confidence_ai = probabilities[st.session_state.label_encoder.transform([predicted_outcome_ai])[0]] * 100
 
-                prob_df = pd.DataFrame({
-                    'Outcome': st.session_state.label_encoder.classes_,
-                    'Probability': probabilities
-                }).sort_values(by='Probability', ascending=False)
-                st.dataframe(prob_df, hide_index=True, use_container_width=True)
+        st.markdown(f"🤖 **AI Model Prediction:** ➡️ **{predicted_outcome_ai}** (Confidence: {confidence_ai:.1f}%)")
+        st.caption("Based on the currently selected cards for the next round.") # Changed caption for clarity
 
-        except Exception as e:
-            st.error(f"AI Model prediction error: {e}. Ensure model is trained and data is consistent.")
-            st.caption("Try retraining the model if this persists.")
-            ai_model_prediction_error_occurred = True
-    elif st.session_state.ai_model and st.session_state.label_encoder and len(current_deck_outcomes) < SEQUENCE_LENGTH:
-        st.warning(f"AI model needs at least {SEQUENCE_LENGTH} recent outcomes to predict. Play more rounds!")
-    else:
-        st.info("AI Model is not loaded or not enough data for AI prediction. Train the model and play more rounds.")
+        prob_df = pd.DataFrame({
+            'Outcome': st.session_state.label_encoder.classes_,
+            'Probability': probabilities
+        }).sort_values(by='Probability', ascending=False)
+        st.dataframe(prob_df, hide_index=True, use_container_width=True)
+
+    except ValueError as e:
+        st.error(f"AI Model prediction error: {e}. This means the input data for prediction might be inconsistent with training data (e.g., non-numeric values for cards/sum).")
+        ai_model_prediction_error_occurred = True
+    except Exception as e:
+        st.error(f"An unexpected error occurred during AI model prediction: {e}")
+        ai_model_prediction_error_occurred = True
+else:
+    # This else block covers cases where cards are not selected or model is not ready
+    if not (card1 and card2 and card3):
+        st.info("Select all three cards to see the AI Model's Prediction for this hand.")
+    elif not (st.session_state.ai_model and st.session_state.label_encoder):
+        st.info("AI Model is not loaded. Please train the model first to get predictions.")
+
+# You can keep this part if you want a fallback message for no patterns/AI prediction, otherwise remove it
+# This specifically checks if neither pattern prediction nor AI prediction was attempted/successful
+# if not predicted_by_pattern and not ai_model_prediction_attempted:
+#     st.write("No strong pattern observed, and AI model prediction not available for this hand.")
