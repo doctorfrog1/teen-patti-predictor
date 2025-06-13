@@ -83,6 +83,7 @@ def get_gspread_and_drive_clients():
 
         gauth = GoogleAuth()
         gauth.auth_method = 'service'
+        gauth.credentials = creds
         gauth.service_account_json = creds_info # Pass the creds_info dict directly
         gauth.LoadCredentialsFile = lambda: None # Prevent it from trying to load from file
         gauth.SaveCredentialsFile = lambda: None # Prevent it from trying to save to file
