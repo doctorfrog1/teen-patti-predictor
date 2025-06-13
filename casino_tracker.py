@@ -12,7 +12,6 @@ import joblib
 
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
-# from google.oauth2.service_account import Credentials # This is not strictly needed with the pydrive2 setup below
 
 
 # --- Configuration ---
@@ -75,7 +74,8 @@ def get_gspread_and_drive_clients():
     """Authenticates with Google Sheets and Google Drive using service account credentials."""
     temp_creds_file = "service_account_key.json"
     try:
-        creds_info = st.secrets.gcp_service_account
+        # Convert st.secrets.gcp_service_account (AttrDict) to a regular dictionary
+        creds_info = dict(st.secrets.gcp_service_account)
 
         # Write credentials to a temporary file for pydrive2
         with open(temp_creds_file, "w") as f:
@@ -86,7 +86,7 @@ def get_gspread_and_drive_clients():
 
         # For pydrive2
         gauth = GoogleAuth()
-        # Set settings for service account auth
+        # Set settings for service account auth using the temporary file
         settings = {
             "oauth_scope": [
                 'https://www.googleapis.com/auth/spreadsheets',
@@ -103,7 +103,8 @@ def get_gspread_and_drive_clients():
             "save_credentials": False # Do not try to save credentials
         }
         gauth.attr = settings # Load settings from dictionary
-        gauth.LoadClientSecretsFromDict(creds_info) # This method is better for dict
+        # Now use LoadClientSecrets from the temporary file directly
+        gauth.LoadClientSecrets(temp_creds_file)
         gauth.Authenticate() # Authenticate directly
 
         drive = GoogleDrive(gauth)
