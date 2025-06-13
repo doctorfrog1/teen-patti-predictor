@@ -418,7 +418,7 @@ if 'rounds' not in st.session_state:
 
 # Initialize current_deck_id only if it's not already in session state
 if 'current_deck_id' not in st.session_state:
-    temp_gc = get_gspread_client()
+    temp_gc, _ = get_gspread_and_drive_clients()
     temp_df = pd.DataFrame()
     if temp_gc:
         try:
