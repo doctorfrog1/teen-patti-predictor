@@ -4,3 +4,4 @@ gspread
 scikit-learn
 joblib
 PyDrive2
+oauth2client
