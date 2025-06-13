@@ -396,59 +396,6 @@ def load_ai_model_from_drive():
         if os.path.exists(temp_model_path): os.remove(temp_model_path)
         if os.path.exists(temp_encoder_path): os.remove(temp_encoder_path)
 
-@st.cache_resource
-def load_ai_model():
-    model = None
-    le = None
-
-    # NO st.connection("my_data") HERE
-    gc, drive = get_gspread_and_drive_clients()
-    if not drive:
-        st.sidebar.error("Google Drive client not available. Cannot load AI model.")
-        return None, None
-
-    download_model_path = MODEL_FILE
-    download_encoder_path = ENCODER_FILE
-
-    try:
-        model_folder_id = "1CZepfjRZxWV_wfmEQuZLnbj9H2yAS9Ac"
-
-        file_list = drive.ListFile({
-            'q': f"'{model_folder_id}' in parents and title='{MODEL_FILE}' and trashed=false"
-        }).GetList()
-        if not file_list:
-            st.sidebar.warning(f"AI Prediction Model '{MODEL_FILE}' not found on Google Drive in folder ID {model_folder_id}.")
-            return None, None
-        file = file_list[0]
-        file.GetContentFile(download_model_path)
-
-        file_list_encoder = drive.ListFile({
-            'q': f"'{model_folder_id}' in parents and title='{ENCODER_FILE}' and trashed=false"
-        }).GetList()
-        if not file_list_encoder:
-            st.sidebar.warning(f"Label Encoder '{ENCODER_FILE}' not found on Google Drive in folder ID {model_folder_id}.")
-            if os.path.exists(download_model_path):
-                os.remove(download_model_path)
-            return None, None
-        file_encoder = file_list_encoder[0]
-        file_encoder.GetContentFile(download_encoder_path)
-
-        with open(download_model_path, "rb") as f:
-            model = joblib.load(f)
-        with open(download_encoder_path, "rb") as f:
-            le = joblib.load(f)
-
-        st.sidebar.success("AI Prediction Model Loaded from Google Drive.")
-        return model, le
-    except Exception as e:
-        st.sidebar.error(f"Error loading AI model from Google Drive: {str(e)}")
-        return None, None
-    finally:
-        if os.path.exists(download_model_path):
-            os.remove(download_model_path)
-        if os.path.exists(download_encoder_path):
-            os.remove(download_encoder_path)
-
 
 
 def load_rounds():
@@ -634,7 +581,7 @@ if st.sidebar.button("Train/Retrain AI Model"):
     with st.spinner("Training AI model... This might take a moment."):
         training_successful = train_and_save_prediction_model()
         if training_successful:
-            st.session_state.ai_model, st.session_state.label_encoder = load_ai_model()
+            st.session_state.ai_model, st.session_state.label_encoder = load_ai_model_from_drive()
             st.rerun()
         else:
             st.error("AI model training failed. See messages above.")
