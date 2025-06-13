@@ -170,24 +170,8 @@ def train_and_save_prediction_model(all_rounds_df, sequence_length=SEQUENCE_LENG
 # --- NEW: AI Model Loading Function (Modified for Direct File I/O) ---
 @st.cache_resource
 def load_ai_model():
-    # Keep debug prints temporarily to confirm no more connection issues
-    st.write("--- Debugging st.secrets ---")
-    st.write(f"st.secrets content: {st.secrets}")
-
-    if "connections" in st.secrets:
-        st.write(f"st.secrets['connections'] content: {st.secrets['connections']}")
-        if "my_data" in st.secrets["connections"]:
-            st.write(f"st.secrets['connections']['my_data'] content: {st.secrets['connections']['my_data']}")
-            if "type" in st.secrets["connections"]["my_data"]:
-                st.write("Found 'type' key in my_data connection!")
-            else:
-                st.write("ERROR: 'type' key NOT found in my_data connection despite being in secrets.toml!")
-        else:
-            st.write("ERROR: 'my_data' connection NOT found in st.secrets['connections']!")
-    else:
-        st.write("ERROR: 'connections' section NOT found in st.secrets!")
-
-    st.write("--- End Debugging st.secrets ---")
+    # Removed all problematic st.secrets/st.connection debug prints and logic from here.
+    # The only purpose of this function is to load the AI model files directly from disk.
 
     model = None
     le = None
@@ -197,7 +181,7 @@ def load_ai_model():
     encoder_path = os.path.join(MODEL_DIR, ENCODER_FILE)
 
     try:
-        # Use standard Python file operations instead of st.connection
+        # Use standard Python file operations for loading
         if os.path.exists(model_path) and os.path.exists(encoder_path):
             with open(model_path, "rb") as f:
                 model = joblib.load(f)
