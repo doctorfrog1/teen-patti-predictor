@@ -70,44 +70,39 @@ ALL_CARDS = list(card_values.keys())
 
 # --- HELPER FUNCTIONS ---
 
-@st.cache_resource
 def get_gspread_and_drive_clients():
-    """Authenticates with Google Sheets and Google Drive using service account credentials."""
     try:
-        # Get credentials as a standard dictionary from st.secrets
-        creds_info = dict(st.secrets.gcp_service_account)
+        # Check if secrets exist
+        if "gcp_service_account" not in st.secrets:
+            st.error("Google Cloud service account credentials not found in `st.secrets`. Please configure `secrets.toml`.")
+            return None, None
 
-        # For gspread (no change here, this part is robust)
-        gc = gspread.service_account_from_dict(creds_info)
+        # Load credentials from st.secrets directly as a dictionary
+        creds_dict = st.secrets["gcp_service_account"]
 
-        # For pydrive2: Authenticate using ServiceAccountCredentials directly
-        # Define the scopes for Google Drive and Google Sheets
-        scope = [
+        # Define the required scopes for Google Sheets and Drive
+        # 'https://www.googleapis.com/auth/drive' is needed for listing/creating files.
+        # 'https://www.googleapis.com/auth/spreadsheets' is specifically for Sheets.
+        scopes = [
             'https://www.googleapis.com/auth/spreadsheets',
             'https://www.googleapis.com/auth/drive'
         ]
 
-        # Create credentials object from the service account info
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
+        # Create Credentials object
+        credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 
-        # Initialize GoogleAuth with the credentials
-        gauth = GoogleAuth()
-        gauth.credentials = creds
+        # Authorize gspread client
+        gc = gspread.authorize(credentials)
+        # st.write("gspread client authorized.") # Debug: confirm client authorized
 
-        # Important: Prevent pydrive2 from trying to save or load credential files
-        gauth.LoadCredentialsFile = lambda: None
-        gauth.SaveCredentialsFile = lambda: None
+        # Return both clients
+        return gc, None # Drive client often not directly needed if gspread handles it for sheet access
 
-        # No need to call gauth.Authenticate() explicitly if credentials are set directly like this
-        # The GoogleDrive object will use the set credentials.
-
-        drive = GoogleDrive(gauth)
-
-        return gc, drive
     except Exception as e:
         st.error(f"Error loading Google Cloud credentials for Sheets/Drive: {e}. Please ensure st.secrets are configured correctly with service account details.")
-        st.stop()
-        return None, None # Ensure return None for both if error occurs
+        st.caption("For more info on Streamlit secrets: https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management")
+        return None, None
+# --- End of the corrected get_gspread_and_drive_clients function ---
 
 # Function to delete model files from Drive (ensure this exists and works)
 def delete_model_files_from_drive():
