@@ -30,7 +30,11 @@ PREDICTION_ROUNDS_CONSIDERED = 10
 STREAK_THRESHOLD = 3
 OVER_UNDER_BIAS_THRESHOLD = 0.6
 
-
+# --- AI Configuration ---
+SEQUENCE_LENGTH = 3
+MODEL_FILE = "prediction_model.joblib"
+ENCODER_FILE = "label_encoder.joblib"
+MODEL_DIR = ".streamlit/data"
 
 PATTERNS_TO_WATCH = {
     'OOO_U': ['Over 21', 'Over 21', 'Over 21', 'Under 21'],
