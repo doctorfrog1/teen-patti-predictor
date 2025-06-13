@@ -534,7 +534,7 @@ st.sidebar.subheader("AI Model Management")
 if st.sidebar.button("Train/Retrain AI Model"):
     all_historical_rounds = load_all_historical_rounds_from_sheet()
     with st.spinner("Training AI model... This might take a moment."):
-        training_successful = train_and_save_prediction_model(all_historical_rounds)
+        training_successful = train_and_save_prediction_model()
         if training_successful:
             st.session_state.ai_model, st.session_state.label_encoder = load_ai_model()
             st.rerun()
