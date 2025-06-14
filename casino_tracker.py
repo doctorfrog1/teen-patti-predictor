@@ -332,28 +332,71 @@ def train_and_save_prediction_model():
     st.session_state.ai_model = model
     st.session_state.label_encoder = le
 
-# Assuming 'model' and 'le' are your trained model and label encoder
-# ... (your model training code here) ...
+# ... (your other functions like save_ai_model, load_ai_model, get_gspread_and_drive_clients, delete_model_files_from_drive, save_ai_model_to_drive) ...
 
-# --- Step 1: Save the trained model locally ---
-local_save_success = save_ai_model(model, le) # 'le' is your label_encoder
+def train_and_save_ai_model():
+    """
+    Handles the end-to-end process of training the AI model,
+    saving it locally, and then uploading it to Google Drive.
+    """
+    st.info("Preparing data for AI model training...")
+    all_game_data = load_all_game_data() # Assuming this function exists and loads your data
 
-if local_save_success:
-    st.info("Attempting to upload AI model to Google Drive for persistent storage...")
-    # --- Step 2: Call the Google Drive upload function (your updated save_ai_model_to_drive) ---
-    # The updated save_ai_model_to_drive function does NOT take any arguments.
-    # It assumes the files are saved locally and gets the drive_service internally.
-    drive_upload_success = save_ai_model_to_drive() # Call it WITHOUT ARGUMENTS
+    if all_game_data.empty:
+        st.warning("No game data available to train the AI model. Please add some game data.")
+        return False # Indicate failure, as no training was possible
 
-    if drive_upload_success:
-        st.success("AI prediction model trained and loaded into session state!")
-        return True # Indicate overall training success
-    else:
-        st.error("Failed to save AI model to Google Drive. Training complete but model not persistently stored.")
+    # --- Data Preprocessing for AI Model Training ---
+    # Convert categorical outcomes to numerical labels
+    label_encoder = LabelEncoder()
+    # Assuming 'Outcome' is the column with 'Over 21'/'Under 21' labels
+    all_game_data['Outcome_Encoded'] = label_encoder.fit_transform(all_game_data['Outcome'])
+
+    # Prepare features (X) and target (y) for the model
+    # Ensure these feature columns exist in your all_game_data DataFrame
+    # Example features, adjust based on what you want to predict with
+    # These must be numeric features.
+    features = ['Player A Initial Sum', 'Player B Initial Sum', 'Dealer Initial Sum', 
+                'Player A Final Sum', 'Player B Final Sum', 'Dealer Final Sum',
+                'Number of Rounds Played'] # Adjust these features as per your data
+    
+    # Filter data to ensure only rows with all required features are used for training
+    training_data = all_game_data.dropna(subset=features + ['Outcome_Encoded'])
+
+    if training_data.empty:
+        st.warning("Not enough complete data after preprocessing to train the AI model. Check your data and feature columns.")
         return False
-else:
-    st.error("Failed to save AI model locally. Training complete but model not persistently stored.")
-    return False
+
+    X = training_data[features]
+    y = training_data['Outcome_Encoded']
+
+    st.info(f"Training AI model with {len(X)} samples.")
+
+    # Train the Logistic Regression model
+    model = LogisticRegression(max_iter=1000, solver='liblinear') # Increased max_iter for convergence
+    model.fit(X, y)
+
+    st.session_state.ai_model = model
+    st.session_state.label_encoder = label_encoder
+
+    # --- Step 1: Save the trained model locally ---
+    local_save_success = save_ai_model(model, label_encoder) # 'label_encoder' is your trained LabelEncoder
+
+    if local_save_success:
+        st.info("Attempting to upload AI model to Google Drive for persistent storage...")
+        # --- Step 2: Call the Google Drive upload function ---
+        # The updated save_ai_model_to_drive function takes no arguments.
+        drive_upload_success = save_ai_model_to_drive() 
+
+        if drive_upload_success:
+            st.success("AI prediction model trained and loaded into session state!")
+            return True # Indicate overall training success
+        else:
+            st.error("Failed to save AI model to Google Drive. Training complete but model not persistently stored.")
+            return False
+    else:
+        st.error("Failed to save AI model locally. Training complete but model not persistently stored.")
+        return False
     
 # Ensure these imports are at the very top of your file:
 # from googleapiclient.http import MediaFileUpload
