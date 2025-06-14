@@ -5,7 +5,6 @@ import gspread
 from gspread.exceptions import SpreadsheetNotFound
 import os # Keep this for local file operations like model saving
 import joblib
-MODEL_FOLDER_ID = "1CZepfjRZxWV_wfmEQuZLnbj9H2yAS9Ac"
 
 # Machine Learning imports
 from sklearn.preprocessing import LabelEncoder
@@ -14,17 +13,12 @@ from sklearn.linear_model import LogisticRegression
 
 # Correct Google Authentication import for service accounts
 from google.oauth2.service_account import Credentials # For gspread
-from pydrive2.auth import GoogleAuth # For pydrive2
-from pydrive2.drive import GoogleDrive # For pydrive2
-
-# REMOVE these if they are present, as they are likely conflicting:
-# from pydrive2.auth import GoogleAuth
-# from pydrive2.drive import GoogleDrive
-# from oauth2client.service_account import ServiceAccountCredentials # This is the old one
+from googleapiclient.discovery import build
 
 
 
 # --- Configuration ---
+MODEL_FOLDER_ID = "1CZepfjRZxWV_wfmEQuZLnbj9H2yAS9Ac"
 PLAYER_A_FIXED_CARDS_STR = {'J♣', '10♠', '9♠'}
 PREDICTION_ROUNDS_CONSIDERED = 10
 STREAK_THRESHOLD = 3
@@ -85,38 +79,21 @@ def get_gspread_and_drive_clients():
         creds_dict = st.secrets["gcp_service_account"]
         scopes = [
             'https://www.googleapis.com/auth/spreadsheets',
-            'https://www.googleapis.com/auth/drive' # ESSENTIAL for pydrive2 Drive access
+            'https://www.googleapis.com/auth/drive' # ESSENTIAL for Drive access
         ]
 
         # --- Authenticate for gspread (Sheets) ---
         gspread_credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         gc = gspread.authorize(gspread_credentials)
 
-        # --- Authenticate for pydrive2 (Drive) ---
-        # pydrive2 typically expects a file path for service accounts,
-        # so we'll write a temporary file.
-        temp_creds_path = "gcp_service_account_creds_for_pydrive.json"
-        
-        with open(temp_creds_path, "w") as f:
-            import json
-            # Ensure creds_dict is a standard dict before dumping
-            json.dump(dict(creds_dict), f)
+        # --- Authenticate for Google Drive using google-api-python-client ---
+        # This uses the same credentials object already created for gspread
+        drive_service = build('drive', 'v3', credentials=gspread_credentials)
 
-        gauth = GoogleAuth()
-        # NEW ATTEMPT: Configure pydrive2 using 'service_account_file' directly in settings.
-        # This is a common and often successful way to set up service accounts in pydrive2.
-        gauth.settings = {
-            'oauth_scope': scopes,
-            'service_account_file': temp_creds_path # Direct path to the temporary JSON file
-        }
-        gauth.ServiceAuth() # Authenticate using the service account; no arguments here.
+        # With google-api-python-client, we don't need a temporary JSON file,
+        # so any lines related to creating/deleting temp_creds_path should be removed.
 
-        drive = GoogleDrive(gauth)
-
-        # Clean up the temporary file immediately
-        os.remove(temp_creds_path)
-
-        return gc, drive # Returns both clients
+        return gc, drive_service # Return gspread client and google-api-python-client Drive service
 
     except Exception as e:
         st.error(f"Error loading Google Cloud credentials for Sheets/Drive: {e}. Please ensure st.secrets are configured correctly with service account details.")
