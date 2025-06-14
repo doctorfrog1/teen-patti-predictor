@@ -3,4 +3,4 @@ pandas
 gspread
 scikit-learn
 joblib
-PyDrive2
+google-api-python-client
