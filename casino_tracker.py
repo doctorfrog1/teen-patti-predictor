@@ -760,7 +760,10 @@ if not st.session_state.rounds.empty:
     ai_model_prediction_error_occurred = False
 
     if st.session_state.ai_model and st.session_state.label_encoder:
-        # We need enough outcomes in the current deck to create the required lagged features for AI prediction
+        # Get all outcomes from the current deck for pattern and AI sequence prediction
+        current_deck_outcomes = st.session_state.rounds[st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id]['Outcome'].tolist()
+
+        # We need enough outcomes to create the required lagged features for prediction
         if len(current_deck_outcomes) < PREDICTION_ROUNDS_CONSIDERED:
             st.info(f"AI Model needs at least {PREDICTION_ROUNDS_CONSIDERED} past rounds in the current deck to make a prediction (based on historical sequence). Only {len(current_deck_outcomes)} available.")
             ai_model_prediction_attempted = False
@@ -771,38 +774,35 @@ if not st.session_state.rounds.empty:
             
             try:
                 # Get the last PREDICTION_ROUNDS_CONSIDERED outcomes from the current deck
-                # These will be used to form the lagged features for the prediction input.
-                # Outcome_Lag1 corresponds to the most recent past outcome, Outcome_Lag2 to the one before that, etc.
+                # These will be used to form the lagged features for the prediction input
                 recent_outcomes_for_lags = current_deck_outcomes[-PREDICTION_ROUNDS_CONSIDERED:]
                 
+                # --- DEBUG PRINTS START ---
+                print(f"DEBUG (PREDICTION): PREDICTION_ROUNDS_CONSIDERED: {PREDICTION_ROUNDS_CONSIDERED}")
+                print(f"DEBUG (PREDICTION): Length of current_deck_outcomes: {len(current_deck_outcomes)}")
+                print(f"DEBUG (PREDICTION): recent_outcomes_for_lags: {recent_outcomes_for_lags}")
+                # --- DEBUG PRINTS END ---
+
                 # Encode these outcomes using the trained label encoder
                 recent_outcomes_encoded = st.session_state.label_encoder.transform(recent_outcomes_for_lags)
 
+                # --- DEBUG PRINTS START ---
+                print(f"DEBUG (PREDICTION): Length of recent_outcomes_encoded: {len(recent_outcomes_encoded)}")
+                print(f"DEBUG (PREDICTION): Encoded recent outcomes: {recent_outcomes_encoded}")
+                # --- DEBUG PRINTS END ---
+
                 # Create a DataFrame for prediction matching the training features' structure
-                # The features should be in the order Outcome_Lag1, Outcome_Lag2, ..., Outcome_LagN
                 prediction_features_dict = {}
                 for i in range(PREDICTION_ROUNDS_CONSIDERED):
                     prediction_features_dict[f'Outcome_Lag{i+1}'] = [recent_outcomes_encoded[PREDICTION_ROUNDS_CONSIDERED - 1 - i]]
 
-                # Inside the AI Model's Prediction section, before st.session_state.ai_model.predict(X_predict)
-recent_outcomes_for_lags = current_deck_outcomes[-PREDICTION_ROUNDS_CONSIDERED:] # Ensure this line is present
-recent_outcomes_encoded = st.session_state.label_encoder.transform(recent_outcomes_for_lags) # Ensure this line is present
-
-               print(f"DEBUG (PREDICTION): PREDICTION_ROUNDS_CONSIDERED: {PREDICTION_ROUNDS_CONSIDERED}")
-               print(f"DEBUG (PREDICTION): Length of current_deck_outcomes: {len(current_deck_outcomes)}")
-               print(f"DEBUG (PREDICTION): recent_outcomes_for_lags: {recent_outcomes_for_lags}")
-               print(f"DEBUG (PREDICTION): Length of recent_outcomes_encoded: {len(recent_outcomes_encoded)}")
-               print(f"DEBUG (PREDICTION): Encoded recent outcomes: {recent_outcomes_encoded}")
-
-               prediction_features_dict = {} # Ensure this line and the loop are present
-               for i in range(PREDICTION_ROUNDS_CONSIDERED):
-               prediction_features_dict[f'Outcome_Lag{i+1}'] = [recent_outcomes_encoded[PREDICTION_ROUNDS_CONSIDERED - 1 - i]]
-
                 X_predict = pd.DataFrame(prediction_features_dict)
+                
+                # --- DEBUG PRINTS START ---
                 print(f"DEBUG (PREDICTION): Shape of X_predict (features for prediction): {X_predict.shape}")
                 print(f"DEBUG (PREDICTION): Columns of X_predict: {X_predict.columns.tolist()}")
+                # --- DEBUG PRINTS END ---
 
-                                             
                 predicted_encoded_outcome = st.session_state.ai_model.predict(X_predict)
                 predicted_outcome_ai = st.session_state.label_encoder.inverse_transform(predicted_encoded_outcome)[0]
 
