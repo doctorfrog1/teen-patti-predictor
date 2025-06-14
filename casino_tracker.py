@@ -575,7 +575,8 @@ def save_rounds():
         data_to_write = [st.session_state.rounds.columns.tolist()] + st.session_state.rounds.astype(str).values.tolist()
 
         worksheet.clear()
-        worksheet.update('A1', data_to_write)
+        worksheet.update(range_name='A1', values=data_to_write)
+        
 
     except gspread.exceptions.SpreadsheetNotFound:
         st.error("Cannot save: Google Sheet 'Casino Card Game Log' not found. Please create the sheet and share it correctly.")
