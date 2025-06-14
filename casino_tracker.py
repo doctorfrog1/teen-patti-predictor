@@ -72,27 +72,26 @@ ALL_CARDS = list(card_values.keys())
 
 # --- HELPER FUNCTIONS ---
 
-@st.cache_resource # Use st.cache_resource for objects like clients
+@st.cache_resource
 def get_gspread_and_drive_clients():
     try:
         if "gcp_service_account" not in st.secrets:
             st.error("Google Cloud service account credentials not found in `st.secrets`. Please configure `secrets.toml`.")
             return None, None
-
         creds_dict = st.secrets["gcp_service_account"]
         scopes = [
             'https://www.googleapis.com/auth/spreadsheets',
-            'https://www.googleapis.com/auth/drive' # ESSENTIAL for Drive access
+            'https://www.googleapis.com/auth/drive'
         ]
-
         gspread_credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        
+        # Authorize gspread client
         gc = gspread.authorize(gspread_credentials)
-
-        # Authenticate for Google Drive using google-api-python-client
+        
+        # Build Drive service client
         drive_service = build('drive', 'v3', credentials=gspread_credentials)
-
+        
         return gc, drive_service
-
     except Exception as e:
         st.error(f"Error loading Google Cloud credentials for Sheets/Drive: {e}. Please ensure st.secrets are configured correctly with service account details.")
         st.caption("For more info on Streamlit secrets: https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management")
@@ -103,21 +102,22 @@ def delete_model_files_from_drive():
     gc, drive_service = get_gspread_and_drive_clients()
     if gc is None or drive_service is None:
         st.error("Could not connect to Google Drive to delete files.")
-        return
+        return False # Return False to indicate failure
 
     try:
-        # Query for files within the specific folder that match the names
+        # Correctly query for files within the specific folder
         query = f"'{MODEL_FOLDER_ID}' in parents and trashed=false and (name='prediction_model.joblib' or name='label_encoder.joblib')"
         results = drive_service.files().list(q=query, fields="files(id, name)").execute()
         items = results.get('files', [])
 
         if not items:
             st.info("No AI model files found on Google Drive to delete.")
-            return
+            return True # Return True as there's nothing to delete, so it's "successful" in a way
 
         deleted_count = 0
         for item in items:
             try:
+                # Correctly delete file by ID
                 drive_service.files().delete(fileId=item['id']).execute()
                 deleted_count += 1
             except Exception as e:
@@ -125,11 +125,13 @@ def delete_model_files_from_drive():
         
         if deleted_count > 0:
             st.success(f"Successfully deleted {deleted_count} AI model files from Google Drive.")
+            return True
         else:
-            st.info("No AI model files were deleted (they might not have existed or an error occurred).")
-
+            st.info("No AI model files were deleted (they might not have existed or an error occurred during deletion).")
+            return False # Indicate that deletion did not complete successfully
     except Exception as e:
         st.error(f"Error deleting AI model from Google Drive: {e}")
+        return False
         
 def upload_model_to_drive():
     gc, drive_service = get_gspread_and_drive_clients()
@@ -330,40 +332,44 @@ def train_and_save_prediction_model():
     st.session_state.ai_model = model
     st.session_state.label_encoder = le
 
+# Assuming 'model' and 'le' are your trained model and label encoder
+# ... (your model training code here) ...
+
 # --- Step 1: Save the trained model locally ---
 local_save_success = save_ai_model(model, le) # 'le' is your label_encoder
 
 if local_save_success:
     st.info("Attempting to upload AI model to Google Drive for persistent storage...")
-    # --- Step 2: Call the Google Drive upload function (which is your updated save_ai_model_to_drive) ---
-    # The updated save_ai_model_to_drive (or upload_model_to_drive) function
-    # does NOT take any arguments like model, le, or drive.
+    # --- Step 2: Call the Google Drive upload function (your updated save_ai_model_to_drive) ---
+    # The updated save_ai_model_to_drive function does NOT take any arguments.
     # It assumes the files are saved locally and gets the drive_service internally.
-    save_ai_model_to_drive() # Call it without arguments
+    drive_upload_success = save_ai_model_to_drive() # Call it WITHOUT ARGUMENTS
 
-    # The success/failure messages for the upload are now handled inside save_ai_model_to_drive itself
-    # So you can simplify this block:
-    st.success("AI prediction model trained and loaded into session state!")
-    return True # Indicate overall training success
-
+    if drive_upload_success:
+        st.success("AI prediction model trained and loaded into session state!")
+        return True # Indicate overall training success
+    else:
+        st.error("Failed to save AI model to Google Drive. Training complete but model not persistently stored.")
+        return False
 else:
     st.error("Failed to save AI model locally. Training complete but model not persistently stored.")
     return False
-
+    
 # Ensure these imports are at the very top of your file:
 # from googleapiclient.http import MediaFileUpload
 # import os # You should already have this
 # And make sure you have the corrected delete_model_files_from_drive() function in your file.
 
-def save_ai_model_to_drive(): # Use this name if that's what your app calls it
+def save_ai_model_to_drive(): # Updated signature: No arguments needed
     """
     Uploads the trained AI model and label encoder from local files to Google Drive.
-    This function replaces the PyDrive2 logic for saving to Drive.
+    This function replaces the old PyDrive2 logic.
+    It assumes 'prediction_model.joblib' and 'label_encoder.joblib' exist locally.
     """
     gc, drive_service = get_gspread_and_drive_clients()
     if gc is None or drive_service is None:
         st.error("Could not connect to Google Drive to upload files.")
-        return
+        return False # Indicate failure
 
     model_path = 'prediction_model.joblib'
     encoder_path = 'label_encoder.joblib'
@@ -372,32 +378,38 @@ def save_ai_model_to_drive(): # Use this name if that's what your app calls it
     if not os.path.exists(model_path) or not os.path.exists(encoder_path):
         st.error("Local AI model files (prediction_model.joblib or label_encoder.joblib) not found."
                  " Please ensure the model was trained and saved locally before attempting to upload to Drive.")
-        return
+        return False # Indicate failure
 
     try:
-        # First, delete existing files to avoid duplicates and ensure clean upload
         st.info("Deleting old AI model files from Google Drive before uploading new ones...")
-        # This calls the delete_model_files_from_drive() function, which must also be updated!
-        delete_model_files_from_drive() 
+        # This calls the delete_model_files_from_drive() function, which is now correct
+        delete_success = delete_model_files_from_drive() 
+        
+        # Proceed only if deletion was successful or no files existed to delete
+        if not delete_success and delete_success is not None: # None means get_gspread_and_drive_clients failed
+            st.warning("Skipping upload as deletion of old files failed.")
+            return False
 
         uploaded_count = 0
 
         # Upload model file
         file_metadata_model = {'name': 'prediction_model.joblib', 'parents': [MODEL_FOLDER_ID]}
-        media_model = MediaFileUpload(model_path, mimetype='application/octet-stream', resumable=True) # Specify mimetype
-        file_model = drive_service.files().create(body=file_metadata_model, media_body=media_model, fields='id').execute()
+        media_model = MediaFileUpload(model_path, mimetype='application/octet-stream', resumable=True)
+        drive_service.files().create(body=file_metadata_model, media_body=media_model, fields='id').execute()
         uploaded_count += 1
 
         # Upload encoder file
         file_metadata_encoder = {'name': 'label_encoder.joblib', 'parents': [MODEL_FOLDER_ID]}
-        media_encoder = MediaFileUpload(encoder_path, mimetype='application/octet-stream', resumable=True) # Specify mimetype
-        file_encoder = drive_service.files().create(body=file_metadata_encoder, media_body=media_encoder, fields='id').execute()
+        media_encoder = MediaFileUpload(encoder_path, mimetype='application/octet-stream', resumable=True)
+        drive_service.files().create(body=file_metadata_encoder, media_body=media_encoder, fields='id').execute()
         uploaded_count += 1
         
         st.success(f"Successfully uploaded {uploaded_count} AI model files to Google Drive.")
+        return True # Indicate success
 
     except Exception as e:
         st.error(f"Error uploading AI model to Google Drive: {e}")
+        return False # Indicate failure
         
 def save_ai_model(model, label_encoder):
     """Saves the trained AI model and label encoder to local files."""
@@ -410,26 +422,23 @@ def save_ai_model(model, label_encoder):
         st.error(f"Error saving AI model locally: {e}")
         return False
 
-@st.cache_data # Use st.cache_data for model loading results
+@st.cache_data
 def load_ai_model_from_drive():
     st.info("Attempting to load AI model from Google Drive...")
     gc, drive_service = get_gspread_and_drive_clients()
     if gc is None or drive_service is None:
-        return None, None # Indicate failure
+        return None, None
 
     temp_model_path = 'prediction_model_downloaded.joblib'
     temp_encoder_path = 'label_encoder_downloaded.joblib'
 
     try:
-        # Query for files within the specific folder that match the names
-        # 'fields' is crucial to limit the response and improve performance
         query = f"'{MODEL_FOLDER_ID}' in parents and trashed=false and (name='prediction_model.joblib' or name='label_encoder.joblib')"
         results = drive_service.files().list(q=query, fields="files(id, name)").execute()
         items = results.get('files', [])
 
         model_file_id = None
         encoder_file_id = None
-
         for item in items:
             if item['name'] == "prediction_model.joblib":
                 model_file_id = item['id']
@@ -447,7 +456,6 @@ def load_ai_model_from_drive():
         done = False
         while done is False:
             status, done = downloader_model.next_chunk()
-        
         with open(temp_model_path, 'wb') as f:
             f.write(fh_model.getvalue())
 
@@ -458,13 +466,13 @@ def load_ai_model_from_drive():
         done = False
         while done is False:
             status, done = downloader_encoder.next_chunk()
-        
         with open(temp_encoder_path, 'wb') as f:
             f.write(fh_encoder.getvalue())
 
-        # Load from downloaded files
+        # Load models
         model = joblib.load(temp_model_path)
         encoder = joblib.load(temp_encoder_path)
+        
         st.session_state.ai_model = model
         st.session_state.label_encoder = encoder
         st.sidebar.success("AI Prediction Model Loaded from Google Drive.")
@@ -474,7 +482,7 @@ def load_ai_model_from_drive():
         st.error(f"Error loading AI model from Google Drive: {e}")
         return None, None
     finally:
-        # Clean up temporary files
+        # Clean up temporary downloaded files
         if os.path.exists(temp_model_path): 
             os.remove(temp_model_path)
         if os.path.exists(temp_encoder_path): 
