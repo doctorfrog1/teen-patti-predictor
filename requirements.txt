@@ -4,3 +4,4 @@ gspread
 scikit-learn
 joblib
 google-api-python-client
+google-auth-oauthlib
