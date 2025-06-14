@@ -13,8 +13,11 @@ from sklearn.linear_model import LogisticRegression
 
 # Correct Google Authentication import for service accounts
 from google.oauth2.service_account import Credentials # For gspread
-from googleapiclient.discovery import build
 
+# NEW: Imports for Google API Client Library for Drive operations
+from googleapiclient.discovery import build 
+from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
+import io # Needed for downloading files
 
 
 # --- Configuration ---
@@ -82,18 +85,13 @@ def get_gspread_and_drive_clients():
             'https://www.googleapis.com/auth/drive' # ESSENTIAL for Drive access
         ]
 
-        # --- Authenticate for gspread (Sheets) ---
         gspread_credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         gc = gspread.authorize(gspread_credentials)
 
-        # --- Authenticate for Google Drive using google-api-python-client ---
-        # This uses the same credentials object already created for gspread
+        # Authenticate for Google Drive using google-api-python-client
         drive_service = build('drive', 'v3', credentials=gspread_credentials)
 
-        # With google-api-python-client, we don't need a temporary JSON file,
-        # so any lines related to creating/deleting temp_creds_path should be removed.
-
-        return gc, drive_service # Return gspread client and google-api-python-client Drive service
+        return gc, drive_service
 
     except Exception as e:
         st.error(f"Error loading Google Cloud credentials for Sheets/Drive: {e}. Please ensure st.secrets are configured correctly with service account details.")
@@ -101,21 +99,74 @@ def get_gspread_and_drive_clients():
         return None, None
         
 # Function to delete model files from Drive (ensure this exists and works)
-def delete_model_files_from_drive(drive_client, folder_id):
-    model_filename = "prediction_model.joblib"
-    encoder_filename = "label_encoder.joblib"
+def delete_model_files_from_drive():
+    gc, drive_service = get_gspread_and_drive_clients()
+    if gc is None or drive_service is None:
+        st.error("Could not connect to Google Drive to delete files.")
+        return
+
     try:
-        st.info("Attempting to delete old AI model files from Google Drive...")
-        existing_files = drive_client.ListFile({'q': f"'{folder_id}' in parents and (title='{model_filename}' or title='{encoder_filename}') and trashed=false"}).GetList()
-        if existing_files:
-            for file in existing_files:
-                st.info(f"Deleting existing file: {file['title']}")
-                file.Delete()
-            st.info("Old AI model files deleted from Google Drive.")
+        # Query for files within the specific folder that match the names
+        query = f"'{MODEL_FOLDER_ID}' in parents and trashed=false and (name='prediction_model.joblib' or name='label_encoder.joblib')"
+        results = drive_service.files().list(q=query, fields="files(id, name)").execute()
+        items = results.get('files', [])
+
+        if not items:
+            st.info("No AI model files found on Google Drive to delete.")
+            return
+
+        deleted_count = 0
+        for item in items:
+            try:
+                drive_service.files().delete(fileId=item['id']).execute()
+                deleted_count += 1
+            except Exception as e:
+                st.warning(f"Could not delete file '{item['name']}': {e}")
+        
+        if deleted_count > 0:
+            st.success(f"Successfully deleted {deleted_count} AI model files from Google Drive.")
         else:
-            st.info("No old AI model files found on Google Drive to delete.")
+            st.info("No AI model files were deleted (they might not have existed or an error occurred).")
+
     except Exception as e:
-        st.error(f"Error deleting old AI model files from Google Drive: {e}")
+        st.error(f"Error deleting AI model from Google Drive: {e}")
+        
+def upload_model_to_drive():
+    gc, drive_service = get_gspread_and_drive_clients()
+    if gc is None or drive_service is None:
+        st.error("Could not connect to Google Drive to upload files.")
+        return
+
+    model_path = 'prediction_model.joblib'
+    encoder_path = 'label_encoder.joblib'
+
+    if not os.path.exists(model_path) or not os.path.exists(encoder_path):
+        st.error("Local AI model files not found. Please train the model first.")
+        return
+
+    try:
+        # First, delete existing files to avoid duplicates and ensure clean upload
+        st.info("Deleting old AI model files from Google Drive before uploading new ones...")
+        delete_model_files_from_drive() # Use the updated delete function
+
+        uploaded_count = 0
+
+        # Upload model file
+        file_metadata_model = {'name': 'prediction_model.joblib', 'parents': [MODEL_FOLDER_ID]}
+        media_model = MediaFileUpload(model_path, mimetype='application/octet-stream', resumable=True) # Specify mimetype
+        file_model = drive_service.files().create(body=file_metadata_model, media_body=media_model, fields='id').execute()
+        uploaded_count += 1
+
+        # Upload encoder file
+        file_metadata_encoder = {'name': 'label_encoder.joblib', 'parents': [MODEL_FOLDER_ID]}
+        media_encoder = MediaFileUpload(encoder_path, mimetype='application/octet-stream', resumable=True) # Specify mimetype
+        file_encoder = drive_service.files().create(body=file_metadata_encoder, media_body=media_encoder, fields='id').execute()
+        uploaded_count += 1
+        
+        st.success(f"Successfully uploaded {uploaded_count} AI model files to Google Drive.")
+
+    except Exception as e:
+        st.error(f"Error uploading AI model to Google Drive: {e}")
 
 # @st.cache_data # <-- UNCOMMENT THIS LINE if it's commented out in your file.
 def load_all_historical_rounds_from_sheet():
@@ -327,51 +378,75 @@ def save_ai_model_to_drive(model, label_encoder, drive_client, folder_id):
         if os.path.exists(encoder_filename): os.remove(encoder_filename)
         return False
 
-@st.cache_resource(ttl=3600) # Cache the loaded model for 1 hour
+@st.cache_data # Use st.cache_data for model loading results
 def load_ai_model_from_drive():
-    gc, drive = get_gspread_and_drive_clients() # Get clients for loading
-    if not (gc and drive):
-        st.sidebar.error("Could not connect to Google Drive to load AI model.")
-        return None, None # Return None for both model and encoder
+    st.info("Attempting to load AI model from Google Drive...")
+    gc, drive_service = get_gspread_and_drive_clients()
+    if gc is None or drive_service is None:
+        return None, None # Indicate failure
 
-    model_filename = "prediction_model.joblib"
-    encoder_filename = "label_encoder.joblib"
-    folder_id = MODEL_FOLDER_ID # Use the same folder ID as for saving
-
-    model = None
-    encoder = None
+    temp_model_path = 'prediction_model_downloaded.joblib'
+    temp_encoder_path = 'label_encoder_downloaded.joblib'
 
     try:
-        st.sidebar.info("Attempting to load AI model from Google Drive...")
+        # Query for files within the specific folder that match the names
+        # 'fields' is crucial to limit the response and improve performance
+        query = f"'{MODEL_FOLDER_ID}' in parents and trashed=false and (name='prediction_model.joblib' or name='label_encoder.joblib')"
+        results = drive_service.files().list(q=query, fields="files(id, name)").execute()
+        items = results.get('files', [])
 
-        # Search for the model and encoder files in the specified folder
-        model_file_list = drive.ListFile({'q': f"'{folder_id}' in parents and title='{model_filename}' and trashed=false"}).GetList()
-        encoder_file_list = drive.ListFile({'q': f"'{folder_id}' in parents and title='{encoder_filename}' and trashed=false"}).GetList()
+        model_file_id = None
+        encoder_file_id = None
 
-        if not model_file_list or not encoder_file_list:
-            st.sidebar.warning(f"AI Prediction Model '{model_filename}' or '{encoder_filename}' not found on Google Drive in folder ID {folder_id}. Please train the model first.")
+        for item in items:
+            if item['name'] == "prediction_model.joblib":
+                model_file_id = item['id']
+            elif item['name'] == "label_encoder.joblib":
+                encoder_file_id = item['id']
+
+        if not model_file_id or not encoder_file_id:
+            st.warning("AI Model or Label Encoder files not found on Google Drive. Please train and upload the model.")
             return None, None
 
-        # Download files to temporary local paths
-        temp_model_path = "temp_prediction_model.joblib"
-        temp_encoder_path = "temp_label_encoder.joblib"
+        # Download model file
+        request_model = drive_service.files().get_media(fileId=model_file_id)
+        fh_model = io.BytesIO()
+        downloader_model = MediaIoBaseDownload(fh_model, request_model)
+        done = False
+        while done is False:
+            status, done = downloader_model.next_chunk()
+        
+        with open(temp_model_path, 'wb') as f:
+            f.write(fh_model.getvalue())
 
-        model_file_list[0].GetContentFile(temp_model_path)
-        encoder_file_list[0].GetContentFile(temp_encoder_path)
+        # Download encoder file
+        request_encoder = drive_service.files().get_media(fileId=encoder_file_id)
+        fh_encoder = io.BytesIO()
+        downloader_encoder = MediaIoBaseDownload(fh_encoder, request_encoder)
+        done = False
+        while done is False:
+            status, done = downloader_encoder.next_chunk()
+        
+        with open(temp_encoder_path, 'wb') as f:
+            f.write(fh_encoder.getvalue())
 
-        # Load models from temporary local paths
+        # Load from downloaded files
         model = joblib.load(temp_model_path)
         encoder = joblib.load(temp_encoder_path)
-
+        st.session_state.ai_model = model
+        st.session_state.label_encoder = encoder
         st.sidebar.success("AI Prediction Model Loaded from Google Drive.")
         return model, encoder
+
     except Exception as e:
-        st.sidebar.error(f"Error loading AI model from Google Drive: {e}")
+        st.error(f"Error loading AI model from Google Drive: {e}")
         return None, None
     finally:
-        # Clean up temporary local files
-        if os.path.exists(temp_model_path): os.remove(temp_model_path)
-        if os.path.exists(temp_encoder_path): os.remove(temp_encoder_path)
+        # Clean up temporary files
+        if os.path.exists(temp_model_path): 
+            os.remove(temp_model_path)
+        if os.path.exists(temp_encoder_path): 
+            os.remove(temp_encoder_path)
 
 
 
