@@ -98,40 +98,27 @@ def get_gspread_and_drive_clients():
         return None, None
         
 # Function to delete model files from Drive (ensure this exists and works)
-def delete_model_files_from_drive():
-    gc, drive_service = get_gspread_and_drive_clients()
-    if gc is None or drive_service is None:
-        st.error("Could not connect to Google Drive to delete files.")
-        return False # Return False to indicate failure
-
+def delete_model_files_from_drive(drive_service, folder_id):
+    """Deletes old model and label encoder files from the specified Google Drive folder."""
     try:
-        # Correctly query for files within the specific folder
-        query = f"'{MODEL_FOLDER_ID}' in parents and trashed=false and (name='prediction_model.joblib' or name='label_encoder.joblib')"
-        results = drive_service.files().list(q=query, fields="files(id, name)").execute()
-        items = results.get('files', [])
+        # Search for model files in the specified folder
+        file_list = drive_service.files().list(
+            q=f"'{folder_id}' in parents and (name contains 'ai_model.joblib' or name contains 'label_encoder.joblib')",
+            fields="files(id, name)"
+        ).execute()
 
-        if not items:
-            st.info("No AI model files found on Google Drive to delete.")
-            return True # Return True as there's nothing to delete, so it's "successful" in a way
+        files_found = file_list.get('files', [])
+        if not files_found:
+            st.info("No old model files found in Google Drive to delete.")
+            return
 
-        deleted_count = 0
-        for item in items:
-            try:
-                # Correctly delete file by ID
-                drive_service.files().delete(fileId=item['id']).execute()
-                deleted_count += 1
-            except Exception as e:
-                st.warning(f"Could not delete file '{item['name']}': {e}")
-        
-        if deleted_count > 0:
-            st.success(f"Successfully deleted {deleted_count} AI model files from Google Drive.")
-            return True
-        else:
-            st.info("No AI model files were deleted (they might not have existed or an error occurred during deletion).")
-            return False # Indicate that deletion did not complete successfully
+        for file_item in files_found:
+            drive_service.files().delete(fileId=file_item['id']).execute()
+            st.info(f"Deleted old model file from Drive: {file_item['name']}")
     except Exception as e:
-        st.error(f"Error deleting AI model from Google Drive: {e}")
-        return False
+        # It's okay if deletion fails, especially if files don't exist or permissions are off.
+        # Just log the error and continue.
+        st.error(f"Error deleting old model files from Google Drive: {e}")
         
 def upload_model_to_drive():
     gc, drive_service = get_gspread_and_drive_clients()
