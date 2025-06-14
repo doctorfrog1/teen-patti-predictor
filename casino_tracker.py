@@ -305,6 +305,13 @@ def train_ai_model(df):
     try:
         model.fit(X, y_encoded)
         print("DEBUG: Model fitted successfully for sequence prediction.")
+        # Inside train_ai_model function, after model.fit()
+        print(f"DEBUG (TRAINING): Model fitted successfully for sequence prediction.")
+        if hasattr(model, 'feature_names_in_'):
+            print(f"DEBUG (TRAINING): Model feature names learned: {model.feature_names_in_.tolist()}")
+        else:
+            print(f"DEBUG (TRAINING): Model has no feature_names_in_ attribute.")
+        
     except Exception as e:
         st.error(f"Error during model fitting (Logistic Regression) for sequence prediction: {e}")
         st.error("AI model training failed.")
@@ -801,6 +808,13 @@ if not st.session_state.rounds.empty:
                 # --- DEBUG PRINTS START ---
                 print(f"DEBUG (PREDICTION): Shape of X_predict (features for prediction): {X_predict.shape}")
                 print(f"DEBUG (PREDICTION): Columns of X_predict: {X_predict.columns.tolist()}")
+                # Inside the AI Model's Prediction section, before the predict() call
+                print(f"DEBUG (PREDICTION): Shape of X_predict (features for prediction): {X_predict.shape}")
+                print(f"DEBUG (PREDICTION): Columns of X_predict: {X_predict.columns.tolist()}")
+                if hasattr(st.session_state.ai_model, 'feature_names_in_'):
+                    print(f"DEBUG (PREDICTION): Model loaded feature names expected: {st.session_state.ai_model.feature_names_in_.tolist()}")
+                else:
+                    print(f"DEBUG (PREDICTION): Loaded model has no feature_names_in_ attribute.")
                 # --- DEBUG PRINTS END ---
 
                 predicted_encoded_outcome = st.session_state.ai_model.predict(X_predict)
