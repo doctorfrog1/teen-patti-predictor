@@ -22,7 +22,7 @@ import io
 # --- Configuration ---
 MODEL_FOLDER_ID = "1CZepfjRZxWV_wfmEQuZLnbj9H2yAS9Ac"
 PLAYER_A_FIXED_CARDS_STR = {'J♣', '10♠', '9♠'}
-PREDICTION_ROUNDS_CONSIDERED = 10
+PREDICTION_ROUNDS_CONSIDERED = 10 # Number of previous rounds to consider for AI sequence prediction
 STREAK_THRESHOLD = 3
 OVER_UNDER_BIAS_THRESHOLD = 0.6
 
@@ -225,78 +225,86 @@ def load_all_historical_rounds_from_sheet():
         st.error(f"Error loading historical rounds from Google Sheet: {e}. Starting with empty history.")
         return pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
 
-# This is the 'train_ai_model' function you asked about and should contain your core training logic.
+# This is the 'train_ai_model' function, now updated for sequence prediction.
 def train_ai_model(df):
-    print("Starting train_ai_model function...") # DEBUG
+    print("Starting train_ai_model function (for sequence prediction)...") # DEBUG
     if df.empty:
         st.warning("DataFrame is empty. Cannot train.") # DEBUG
         return None, None
 
-    MIN_ROUNDS_FOR_TRAINING = 4
+    # Need enough rounds for lags and a target outcome
+    MIN_ROUNDS_FOR_TRAINING = PREDICTION_ROUNDS_CONSIDERED + 1 
     if len(df) < MIN_ROUNDS_FOR_TRAINING:
-        st.warning(f"Not enough data to train the AI model. Need at least {MIN_ROUNDS_FOR_TRAINING} rounds. Found {len(df)}.")
-        print(f"DEBUG: Not enough data ({len(df)}) for training.") # DEBUG
+        st.warning(f"Not enough data to train the AI model for sequence prediction. Need at least {MIN_ROUNDS_FOR_TRAINING} rounds. Found {len(df)}.")
+        print(f"DEBUG: Not enough data ({len(df)}) for sequence training.") # DEBUG
         return None, None
 
-    # Ensure feature columns are numeric and handle missing values
-    for col in ['Card1', 'Card2', 'Card3', 'Sum']:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        else:
-            st.warning(f"Missing column '{col}'. Filling with zeros for training.")
-            print(f"DEBUG: Missing column '{col}' for training.") # DEBUG
-            df[col] = 0
-
-    df.dropna(subset=['Card1', 'Card2', 'Card3', 'Sum'], inplace=True)
-
-    X = df[['Card1', 'Card2', 'Card3', 'Sum']]
-    y = df['Outcome']
-
+    # Ensure Outcome column is consistent and filter invalid outcomes
+    df['Outcome'] = df['Outcome'].astype(str).str.strip()
     valid_outcomes = ['Over 21', 'Under 21', 'Exactly 21']
-    y = y[y.isin(valid_outcomes)] # Filter y based on valid outcomes
+    df = df[df['Outcome'].isin(valid_outcomes)].copy() # Filter and make a copy to avoid SettingWithCopyWarning
 
-    if X.empty or y.empty or len(X) != len(y):
-        st.error("After data preparation, features (X) or outcomes (y) are empty or mismatched. AI model training aborted.")
-        print(f"DEBUG: X empty ({X.empty}), y empty ({y.empty}), len mismatch ({len(X)} vs {len(y)}). Aborting training.") # DEBUG
+    if df.empty:
+        st.warning("DataFrame is empty after filtering invalid outcomes. Cannot train.")
         return None, None
 
     le = LabelEncoder()
     try:
-        le.fit(valid_outcomes) # Fit only on the expected valid outcomes
+        # Fit LabelEncoder on ALL valid outcomes
+        le.fit(valid_outcomes)
     except Exception as e:
         st.error(f"Error fitting LabelEncoder: {e}. Check expected outcomes.")
-        print(f"DEBUG: LabelEncoder fit error: {traceback.format_exc()}") # DEBUG
+        print(f"DEBUG: LabelEncoder fit error: {traceback.format_exc()}")
         return None, None
 
-    try:
-        y_encoded = le.transform(y)
-    except ValueError as e:
-        st.error(f"Error during encoding: {e}. This means an outcome appeared in your data that the LabelEncoder was not fitted on. Ensure your sheet data is clean and matches expected outcomes ('Over 21', 'Under 21', 'Exactly 21').")
-        print(f"DEBUG: LabelEncoder transform error: {traceback.format_exc()}") # DEBUG
+    # Sort for correct lagging within each deck
+    df_sorted = df.sort_values(by=['Deck_ID', 'Timestamp']).copy()
+    
+    # Encode the outcome for use in lagged features and for the target variable
+    df_sorted['Outcome_Encoded'] = le.transform(df_sorted['Outcome'])
+
+    # Create lagged features (Outcome_Lag1 is the most recent past outcome, Outcome_LagN is the oldest)
+    lag_features = []
+    for i in range(1, PREDICTION_ROUNDS_CONSIDERED + 1): 
+        col_name = f'Outcome_Lag{i}'
+        # Shift within each Deck_ID group to avoid cross-deck contamination for lags
+        df_sorted[col_name] = df_sorted.groupby('Deck_ID')['Outcome_Encoded'].shift(i)
+        lag_features.append(col_name)
+
+    # Drop rows where lagged features are NaN (these are the first few rows in each deck that don't have enough history)
+    df_train = df_sorted.dropna(subset=lag_features).copy()
+
+    # Define X (features are the lagged outcomes) and y (target is the current outcome)
+    X = df_train[lag_features]
+    y_encoded = df_train['Outcome_Encoded']
+
+    if X.empty or y_encoded.empty or len(X) != len(y_encoded):
+        st.error("After data preparation for sequence prediction, features (X) or outcomes (y) are empty or mismatched. AI model training aborted.")
+        print(f"DEBUG: X empty ({X.empty}), y_encoded empty ({y_encoded.empty}), len mismatch ({len(X)} vs {len(y_encoded)}). Aborting training.")
         return None, None
 
-    if len(pd.Series(y_encoded).unique()) < 2:
-        st.error(f"Error during AI model training: This solver needs samples of at least 2 classes in the data, but the data contains only one class after encoding. Found: {le.inverse_transform(pd.Series(y_encoded).unique())}")
+    if len(y_encoded.unique()) < 2:
+        st.error(f"Error during AI model training: This solver needs samples of at least 2 classes in the data, but the data contains only one class after encoding. Found: {le.inverse_transform(y_encoded.unique())}")
         st.error("AI model training failed. Please ensure your Google Sheet has rounds with different outcomes (e.g., 'Over 21' AND 'Under 21').")
-        print(f"DEBUG: Only one class found in encoded y: {pd.Series(y_encoded).unique()}. Aborting training.") # DEBUG
+        print(f"DEBUG: Only one class found in encoded y: {y_encoded.unique()}. Aborting training.")
         return None, None
 
-    st.info(f"Training AI model with {len(X)} samples.")
-    print(f"DEBUG: Starting Logistic Regression training with {len(X)} samples.") # DEBUG
+    st.info(f"Training AI model with {len(X)} samples for sequence prediction.")
+    print(f"DEBUG: Starting Logistic Regression training for sequence prediction with {len(X)} samples.")
 
     model = LogisticRegression(max_iter=1000, random_state=42)
     try:
         model.fit(X, y_encoded)
-        print("DEBUG: Model fitted successfully.") # DEBUG
+        print("DEBUG: Model fitted successfully for sequence prediction.")
     except Exception as e:
-        st.error(f"Error during model fitting (Logistic Regression): {e}")
+        st.error(f"Error during model fitting (Logistic Regression) for sequence prediction: {e}")
         st.error("AI model training failed.")
-        print(f"DEBUG: Model fitting error: {traceback.format_exc()}") # DEBUG
+        print(f"DEBUG: Model fitting error: {traceback.format_exc()}")
         return None, None
 
     return model, le
 
-# Modified: This is the function called by the sidebar button.
+# This is the function called by the sidebar button.
 def train_and_save_prediction_model():
     gc, drive_service = get_gspread_and_drive_clients()
     if gc is None or drive_service is None:
@@ -576,7 +584,7 @@ st.sidebar.subheader("AI Model Management")
 
 if st.sidebar.button("Train/Retrain AI Model"):
     with st.spinner("Training AI model... This might take a moment."):
-        training_successful = train_and_save_prediction_model() # This now calls train_ai_model(df)
+        training_successful = train_and_save_prediction_model()
         if training_successful:
             st.session_state.ai_model, st.session_state.label_encoder = load_ai_model_from_drive()
             st.rerun()
@@ -714,13 +722,14 @@ else:
 st.header("Next Round Prediction")
 
 if not st.session_state.rounds.empty:
+    # Get all outcomes from the current deck for pattern and AI sequence prediction
     current_deck_outcomes = st.session_state.rounds[st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id]['Outcome'].tolist()
 
     predicted_by_pattern = False
     pattern_prediction_outcome = None
     pattern_prediction_confidence = 0
 
-    if len(current_deck_outcomes) >= 2:
+    if len(current_deck_outcomes) >= 2: # Patterns need at least 2 outcomes to start forming
         sorted_patterns = sorted(PATTERNS_TO_WATCH.items(), key=lambda item: len(item[1]), reverse=True)
 
         for pattern_name, pattern_sequence in sorted_patterns:
@@ -741,50 +750,57 @@ if not st.session_state.rounds.empty:
     ai_model_prediction_attempted = False
     ai_model_prediction_error_occurred = False
 
-    # The AI model predicts based on the *current hand* (Card1, Card2, Card3, Sum),
-    # not based on a sequence of previous outcomes.
-    # So, we need the inputs for the *current* selection
-    ai_model_prediction_attempted = False
-    ai_model_prediction_error_occurred = False
+    if st.session_state.ai_model and st.session_state.label_encoder:
+        # We need enough outcomes in the current deck to create the required lagged features for AI prediction
+        if len(current_deck_outcomes) < PREDICTION_ROUNDS_CONSIDERED:
+            st.info(f"AI Model needs at least {PREDICTION_ROUNDS_CONSIDERED} past rounds in the current deck to make a prediction (based on historical sequence). Only {len(current_deck_outcomes)} available.")
+            ai_model_prediction_attempted = False
+        else:
+            ai_model_prediction_attempted = True
+            st.markdown("---")
+            st.subheader("🤖 AI Model's Prediction for the *Next Round* (based on recent outcomes)")
+            
+            try:
+                # Get the last PREDICTION_ROUNDS_CONSIDERED outcomes from the current deck
+                # These will be used to form the lagged features for the prediction input.
+                # Outcome_Lag1 corresponds to the most recent past outcome, Outcome_Lag2 to the one before that, etc.
+                recent_outcomes_for_lags = current_deck_outcomes[-PREDICTION_ROUNDS_CONSIDERED:]
+                
+                # Encode these outcomes using the trained label encoder
+                recent_outcomes_encoded = st.session_state.label_encoder.transform(recent_outcomes_for_lags)
 
-    # Only attempt AI prediction if all 3 cards are selected AND the model is loaded
-    if card1 and card2 and card3 and st.session_state.ai_model and st.session_state.label_encoder:
-        ai_model_prediction_attempted = True
-        st.markdown("---")
-        st.subheader("AI Model's Prediction for the *current hand*")
-        try:
-            current_total = card_values[card1] + card_values[card2] + card_values[card3]
+                # Create a DataFrame for prediction matching the training features' structure
+                # The features should be in the order Outcome_Lag1, Outcome_Lag2, ..., Outcome_LagN
+                prediction_features_dict = {}
+                for i in range(PREDICTION_ROUNDS_CONSIDERED):
+                    prediction_features_dict[f'Outcome_Lag{i+1}'] = [recent_outcomes_encoded[PREDICTION_ROUNDS_CONSIDERED - 1 - i]]
 
-            current_hand_features = pd.DataFrame({
-                'Card1': [card_values[card1]],
-                'Card2': [card_values[card2]],
-                'Card3': [card_values[card3]],
-                'Sum': [current_total]
-            })
+                X_predict = pd.DataFrame(prediction_features_dict)
+                
+                predicted_encoded_outcome = st.session_state.ai_model.predict(X_predict)
+                predicted_outcome_ai = st.session_state.label_encoder.inverse_transform(predicted_encoded_outcome)[0]
 
-            predicted_encoded_outcome = st.session_state.ai_model.predict(current_hand_features)
-            predicted_outcome_ai = st.session_state.label_encoder.inverse_transform(predicted_encoded_outcome)[0]
+                probabilities = st.session_state.ai_model.predict_proba(X_predict)[0]
+                confidence_ai = probabilities[st.session_state.label_encoder.transform([predicted_outcome_ai])[0]] * 100
 
-            probabilities = st.session_state.ai_model.predict_proba(current_hand_features)[0]
-            confidence_ai = probabilities[st.session_state.label_encoder.transform([predicted_outcome_ai])[0]] * 100
+                st.markdown(f"➡️ **{predicted_outcome_ai}** (Confidence: {confidence_ai:.1f}%)")
+                st.caption(f"Based on the last {PREDICTION_ROUNDS_CONSIDERED} outcomes in the current deck.")
 
-            st.markdown(f"🤖 **AI Model Prediction:** ➡️ **{predicted_outcome_ai}** (Confidence: {confidence_ai:.1f}%)")
-            st.caption("Based on the currently selected cards for the next round.")
+                prob_df = pd.DataFrame({
+                    'Outcome': st.session_state.label_encoder.classes_,
+                    'Probability': probabilities
+                }).sort_values(by='Probability', ascending=False)
+                st.dataframe(prob_df, hide_index=True, use_container_width=True)
 
-            prob_df = pd.DataFrame({
-                'Outcome': st.session_state.label_encoder.classes_,
-                'Probability': probabilities
-            }).sort_values(by='Probability', ascending=False)
-            st.dataframe(prob_df, hide_index=True, use_container_width=True)
-
-        except ValueError as e:
-            st.error(f"AI Model prediction error: {e}. This means the input data for prediction might be inconsistent with training data (e.g., non-numeric values for cards/sum).")
-            ai_model_prediction_error_occurred = True
-        except Exception as e:
-            st.error(f"An unexpected error occurred during AI model prediction: {e}")
-            ai_model_prediction_error_occurred = True
+            except ValueError as e:
+                st.error(f"AI Model prediction error: {e}. Ensure historical outcomes are consistent with model training and the LabelEncoder.")
+                ai_model_prediction_error_occurred = True
+            except Exception as e:
+                st.error(f"An unexpected error occurred during AI model prediction: {e}")
+                ai_model_prediction_error_occurred = True
     else:
-        if not (card1 and card2 and card3):
-            st.info("Select all three cards to see the AI Model's Prediction for this hand.")
-        elif not (st.session_state.ai_model and st.session_state.label_encoder):
-            st.info("AI Model is not loaded. Please train the model first to get predictions.")
+        # This else block covers cases where the model is not ready
+        st.info("AI Model is not loaded. Please train the model first to get predictions.")
+
+else:
+    st.info("No rounds played yet to provide any predictions.")
