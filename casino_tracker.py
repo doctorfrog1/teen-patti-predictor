@@ -330,52 +330,84 @@ def train_and_save_prediction_model():
     st.session_state.ai_model = model
     st.session_state.label_encoder = le
 
-    # --- Call the Google Drive save function ---
-    success = save_ai_model_to_drive(model, le, drive, MODEL_FOLDER_ID)
+# --- Step 1: Save the trained model locally ---
+local_save_success = save_ai_model(model, le) # 'le' is your label_encoder
 
-    if success:
-        st.success("AI prediction model trained and loaded into session state!")
-        return True
-    else:
-        st.error("Failed to save AI model to Google Drive. Training complete but model not persistently stored.")
-        return False
+if local_save_success:
+    st.info("Attempting to upload AI model to Google Drive for persistent storage...")
+    # --- Step 2: Call the Google Drive upload function (which is your updated save_ai_model_to_drive) ---
+    # The updated save_ai_model_to_drive (or upload_model_to_drive) function
+    # does NOT take any arguments like model, le, or drive.
+    # It assumes the files are saved locally and gets the drive_service internally.
+    save_ai_model_to_drive() # Call it without arguments
 
-def save_ai_model_to_drive(model, label_encoder, drive_client, folder_id):
-    model_filename = "prediction_model.joblib"
-    encoder_filename = "label_encoder.joblib"
+    # The success/failure messages for the upload are now handled inside save_ai_model_to_drive itself
+    # So you can simplify this block:
+    st.success("AI prediction model trained and loaded into session state!")
+    return True # Indicate overall training success
+
+else:
+    st.error("Failed to save AI model locally. Training complete but model not persistently stored.")
+    return False
+
+# Ensure these imports are at the very top of your file:
+# from googleapiclient.http import MediaFileUpload
+# import os # You should already have this
+# And make sure you have the corrected delete_model_files_from_drive() function in your file.
+
+def save_ai_model_to_drive(): # Use this name if that's what your app calls it
+    """
+    Uploads the trained AI model and label encoder from local files to Google Drive.
+    This function replaces the PyDrive2 logic for saving to Drive.
+    """
+    gc, drive_service = get_gspread_and_drive_clients()
+    if gc is None or drive_service is None:
+        st.error("Could not connect to Google Drive to upload files.")
+        return
+
+    model_path = 'prediction_model.joblib'
+    encoder_path = 'label_encoder.joblib'
+
+    # Check if local files exist before attempting to upload
+    if not os.path.exists(model_path) or not os.path.exists(encoder_path):
+        st.error("Local AI model files (prediction_model.joblib or label_encoder.joblib) not found."
+                 " Please ensure the model was trained and saved locally before attempting to upload to Drive.")
+        return
 
     try:
-        st.info("Saving AI model to Google Drive...")
+        # First, delete existing files to avoid duplicates and ensure clean upload
+        st.info("Deleting old AI model files from Google Drive before uploading new ones...")
+        # This calls the delete_model_files_from_drive() function, which must also be updated!
+        delete_model_files_from_drive() 
 
-        # Save locally first as temporary files
-        joblib.dump(model, model_filename)
-        joblib.dump(label_encoder, encoder_filename)
-
-        # Check if files exist on Drive and delete before uploading new ones
-        existing_files = drive_client.ListFile({'q': f"'{folder_id}' in parents and (title='{model_filename}' or title='{encoder_filename}') and trashed=false"}).GetList()
-        for file in existing_files:
-            st.info(f"Deleting existing file on Drive: {file['title']}")
-            file.Delete()
+        uploaded_count = 0
 
         # Upload model file
-        file_model = drive_client.CreateFile({'title': model_filename, 'parents': [{'id': folder_id}]})
-        file_model.SetContentFile(model_filename)
-        file_model.Upload()
-        os.remove(model_filename) # Clean up local temp file
+        file_metadata_model = {'name': 'prediction_model.joblib', 'parents': [MODEL_FOLDER_ID]}
+        media_model = MediaFileUpload(model_path, mimetype='application/octet-stream', resumable=True) # Specify mimetype
+        file_model = drive_service.files().create(body=file_metadata_model, media_body=media_model, fields='id').execute()
+        uploaded_count += 1
 
-        # Upload LabelEncoder file
-        file_encoder = drive_client.CreateFile({'title': encoder_filename, 'parents': [{'id': folder_id}]})
-        file_encoder.SetContentFile(encoder_filename)
-        file_encoder.Upload()
-        os.remove(encoder_filename) # Clean up local temp file
+        # Upload encoder file
+        file_metadata_encoder = {'name': 'label_encoder.joblib', 'parents': [MODEL_FOLDER_ID]}
+        media_encoder = MediaFileUpload(encoder_path, mimetype='application/octet-stream', resumable=True) # Specify mimetype
+        file_encoder = drive_service.files().create(body=file_metadata_encoder, media_body=media_encoder, fields='id').execute()
+        uploaded_count += 1
+        
+        st.success(f"Successfully uploaded {uploaded_count} AI model files to Google Drive.")
 
-        st.success("AI prediction model and LabelEncoder saved successfully to Google Drive!")
+    except Exception as e:
+        st.error(f"Error uploading AI model to Google Drive: {e}")
+        
+def save_ai_model(model, label_encoder):
+    """Saves the trained AI model and label encoder to local files."""
+    try:
+        joblib.dump(model, 'prediction_model.joblib')
+        joblib.dump(label_encoder, 'label_encoder.joblib')
+        st.success("AI model saved locally.")
         return True
     except Exception as e:
-        st.error(f"Error saving AI model to Google Drive: {e}")
-        # Ensure cleanup if saving fails
-        if os.path.exists(model_filename): os.remove(model_filename)
-        if os.path.exists(encoder_filename): os.remove(encoder_filename)
+        st.error(f"Error saving AI model locally: {e}")
         return False
 
 @st.cache_data # Use st.cache_data for model loading results
