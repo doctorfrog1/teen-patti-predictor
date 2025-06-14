@@ -103,10 +103,14 @@ def get_gspread_and_drive_clients():
             json.dump(dict(creds_dict), f)
 
         gauth = GoogleAuth()
-        # FINAL ATTEMPT for pydrive2 service account authentication:
-        # Pass the path to the service account JSON key file directly to ServiceAuth
-        gauth.ServiceAuth(json_keyfile=temp_creds_path) 
-        
+        # NEW ATTEMPT: Configure pydrive2 using 'service_account_file' directly in settings.
+        # This is a common and often successful way to set up service accounts in pydrive2.
+        gauth.settings = {
+            'oauth_scope': scopes,
+            'service_account_file': temp_creds_path # Direct path to the temporary JSON file
+        }
+        gauth.ServiceAuth() # Authenticate using the service account; no arguments here.
+
         drive = GoogleDrive(gauth)
 
         # Clean up the temporary file immediately
