@@ -5,29 +5,22 @@ import gspread
 from gspread.exceptions import SpreadsheetNotFound
 import os # Keep this for local file operations like model saving
 import joblib
+import json # To parse the service account key
 
 # Machine Learning imports
 from sklearn.preprocessing import LabelEncoder
 from sklearn.linear_model import LogisticRegression
 
-
 # Correct Google Authentication import for service accounts
 from google.oauth2.service_account import Credentials # For gspread
-
-# NEW: Imports for Google API Client Library for Drive operations
-from googleapiclient.discovery import build 
-from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
-import io # Needed for downloading files
-
+from googleapiclient.discovery import build # For Google Drive API
 
 # --- Configuration ---
-MODEL_FOLDER_ID = "1CZepfjRZxWV_wfmEQuZLnbj9H2yAS9Ac"
-PLAYER_A_FIXED_CARDS_STR = {'J♣', '10♠', '9♠'}
+MODEL_FOLDER_ID = "1CZepfjRZxWV_wfmEQuZLnbj9H2yAS9Ac" # Your Google Drive Folder ID
+PLAYER_A_FIXED_CARDS_STR = {'J♣', '10♠', '9♠'} # Cards already out of play for Player A's perspective
 PREDICTION_ROUNDS_CONSIDERED = 10
 STREAK_THRESHOLD = 3
 OVER_UNDER_BIAS_THRESHOLD = 0.6
-
-
 
 PATTERNS_TO_WATCH = {
     'OOO_U': ['Over 21', 'Over 21', 'Over 21', 'Under 21'],
@@ -38,66 +31,206 @@ PATTERNS_TO_WATCH = {
     'UU': ['Under 21', 'Under 21'],
     'O_U': ['Over 21', 'Under 21'],
     'U_O': ['Under 21', 'Over 21'],
-    'OOU': ['Over 21', 'Over 21', 'Under 21'],
-    'UUO': ['Under 21', 'Under 21', 'Over 21'],
-    'OUU': ['Over 21', 'Under 21', 'Under 21'],
-    'UOO': ['Under 21', 'Over 21', 'Over 21'],
-    'OOO': ['Over 21', 'Over 21', 'Over 21'],
-    'UUU': ['Under 21', 'Under 21', 'Under 21'],
-    'OOOO': ['Over 21', 'Over 21', 'Over 21', 'Over 21'],
-    'UUUU': ['Under 21', 'Under 21', 'Under 21', 'Under 21'],
-    'Alt_O_U_O': ['Over 21', 'Under 21', 'Over 21'],
-    'Alt_U_O_U': ['Under 21', 'Over 21', 'Under 21'],
-    'E': ['Exactly 21'],
-    'EE': ['Exactly 21', 'Exactly 21'],
-    'OE': ['Over 21', 'Exactly 21'],
-    'UE': ['Under 21', 'Exactly 21'],
-    'EO': ['Exactly 21', 'Over 21'],
-    'EU': ['Exactly 21', 'Under 21'],
-    'OEO': ['Over 21', 'Exactly 21', 'Over 21'],
-    'UEU': ['Under 21', 'Exactly 21', 'Under 21'],
-    'E_O_O': ['Exactly 21', 'Over 21', 'Over 21'],
-    'E_U_U': ['Exactly 21', 'Under 21', 'Under 21'],
-    'O_E_U': ['Over 21', 'Exactly 21', 'Under 21'],
-    'U_E_O': ['Under 21', 'Exactly 21', 'Over 21'],
+    'E_O': ['Exactly 21', 'Over 21'],
+    'E_U': ['Exactly 21', 'Under 21'],
+    'O_E': ['Over 21', 'Exactly 21'],
+    'U_E': ['Under 21', 'Exactly 21']
 }
 
+# --- Card Definitions ---
 card_values = {
-    'A♠': 1, '2♠': 2, '3♠': 3, '4♠': 4, '5♠': 5, '6♠': 6, '7♠': 7, '8♠': 8, '9♠': 9, '10♠': 10, 'J♠': 11, 'Q♠': 12, 'K♠': 13,
-    'A♦': 1, '2♦': 2, '3♦': 3, '4♦': 4, '5♦': 5, '6♦': 6, '7♦': 7, '8♦': 8, '9♦': 9, '10♦': 10, 'J♦': 11, 'Q♦': 12, 'K♦': 13,
-    'A♣': 1, '2♣': 2, '3♣': 3, '4♣': 4, '5♣': 5, '6♣': 6, '7♣': 7, '8♣': 8, '9♣': 9, '10♣': 10, 'J♣': 11, 'Q♣': 12, 'K♣': 13,
-    'A♥': 1, '2♥': 2, '3♥': 3, '4♥': 4, '5♥': 5, '6♥': 6, '7♥': 7, '8♥': 8, '9♥': 9, '10♥': 10, 'J♥': 11, 'Q♥': 12, 'K♥': 13
+    '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10,
+    'J': 10, 'Q': 10, 'K': 10, 'A': 11 # 'A' assumed to be 11 initially
 }
-ALL_CARDS = list(card_values.keys())
+suits = ['♠', '♣', '♦', '♥']
+all_cards_list = [f"{rank}{suit}" for rank in card_values for suit in suits]
 
-# --- HELPER FUNCTIONS ---
-
-@st.cache_resource
-def get_gspread_and_drive_clients():
+# --- Google Sheets Authentication and Data Handling ---
+@st.cache_resource(ttl=3600) # Cache connection for 1 hour
+def get_gspread_client():
     try:
-        if "gcp_service_account" not in st.secrets:
-            st.error("Google Cloud service account credentials not found in `st.secrets`. Please configure `secrets.toml`.")
-            return None, None
-        creds_dict = st.secrets["gcp_service_account"]
-        scopes = [
-            'https://www.googleapis.com/auth/spreadsheets',
-            'https://www.googleapis.com/auth/drive'
-        ]
-        gspread_credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        # Load service account info from Streamlit secrets
+        gcp_service_account_info = {
+            "type": st.secrets["gcp_service_account"]["type"],
+            "project_id": st.secrets["gcp_service_account"]["project_id"],
+            "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
+            "private_key": st.secrets["gcp_service_account"]["private_key"].replace('\\n', '\n'), # Handle multiline private key
+            "client_email": st.secrets["gcp_service_account"]["client_email"],
+            "client_id": st.secrets["gcp_service_account"]["client_id"],
+            "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
+            "token_uri": st.secrets["gcp_service_account"]["token_uri"],
+            "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
+            "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"],
+            "universe_domain": st.secrets["gcp_service_account"]["universe_domain"]
+        }
         
-        # Authorize gspread client
-        gc = gspread.authorize(gspread_credentials)
-        
-        # Build Drive service client
-        drive_service = build('drive', 'v3', credentials=gspread_credentials)
-        
-        return gc, drive_service
+        creds = Credentials.from_service_account_info(gcp_service_account_info)
+        client = gspread.authorize(creds)
+        st.success("Successfully connected to Google Sheets!")
+        return client
     except Exception as e:
-        st.error(f"Error loading Google Cloud credentials for Sheets/Drive: {e}. Please ensure st.secrets are configured correctly with service account details.")
-        st.caption("For more info on Streamlit secrets: https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management")
-        return None, None
+        st.error(f"Error connecting to Google Sheets: {e}")
+        st.info("Please ensure your `.streamlit/secrets.toml` is correctly configured and your service account has access to the Google Sheet.")
+        return None
+
+@st.cache_data(ttl=60) # Cache data for 1 minute
+def load_all_historical_rounds_from_sheet():
+    client = get_gspread_client()
+    if not client:
+        return pd.DataFrame() # Return empty if client connection failed
+    
+    try:
+        spreadsheet = client.open("Casino Card Game Log") # Name of your Google Sheet
+        worksheet = spreadsheet.worksheet("Sheet1") # Assuming data is in Sheet1
         
-# Function to delete model files from Drive (ensure this exists and works)
+        data = worksheet.get_all_values()
+        if not data:
+            st.warning("Google Sheet 'Casino Card Game Log' is empty.")
+            return pd.DataFrame()
+
+        headers = data[0]
+        df = pd.DataFrame(data[1:], columns=headers)
+        
+        # Convert relevant columns to numeric, coercing errors
+        numeric_cols = ['Card 1 Value', 'Card 2 Value', 'Card 3 Value', 'Dealer Card Value', 'Player Sum']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # Drop rows where essential numeric columns became NaN due to coercion
+        df.dropna(subset=numeric_cols, inplace=True)
+
+        st.success(f"Loaded {len(df)} historical rounds from Google Sheet.")
+        return df
+    except SpreadsheetNotFound:
+        st.error("Google Sheet 'Casino Card Game Log' not found. Please ensure the name is correct and shared with the service account.")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error loading data from Google Sheet: {e}")
+        return pd.DataFrame()
+
+def log_round_to_sheet(round_data):
+    client = get_gspread_client()
+    if not client:
+        st.error("Cannot log round: Google Sheets client not available.")
+        return False
+    
+    try:
+        spreadsheet = client.open("Casino Card Game Log")
+        worksheet = spreadsheet.worksheet("Sheet1")
+        
+        # Prepare row to append
+        row_values = [
+            round_data['Date'],
+            round_data['Card 1'],
+            round_data['Card 1 Value'],
+            round_data['Card 2'],
+            round_data['Card 2 Value'],
+            round_data['Card 3'],
+            round_data['Card 3 Value'],
+            round_data['Dealer Card'],
+            round_data['Dealer Card Value'],
+            round_data['Player Sum'],
+            round_data['Round Outcome']
+        ]
+        
+        worksheet.append_row(row_values)
+        st.success("Round logged successfully to Google Sheet!")
+        # Clear cache for historical data to force reload
+        load_all_historical_rounds_from_sheet.clear() 
+        return True
+    except Exception as e:
+        st.error(f"Error logging round to Google Sheet: {e}")
+        return False
+
+# --- Google Drive API (for models) ---
+@st.cache_resource(ttl=3600) # Cache Drive service for 1 hour
+def get_drive_service():
+    try:
+        # Load service account info from Streamlit secrets
+        gcp_service_account_info = {
+            "type": st.secrets["gcp_service_account"]["type"],
+            "project_id": st.secrets["gcp_service_account"]["project_id"],
+            "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
+            "private_key": st.secrets["gcp_service_account"]["private_key"].replace('\\n', '\n'), # Handle multiline private key
+            "client_email": st.secrets["gcp_service_account"]["client_email"],
+            "client_id": st.secrets["gcp_service_account"]["client_id"],
+            "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
+            "token_uri": st.secrets["gcp_service_account"]["token_uri"],
+            "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
+            "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"],
+            "universe_domain": st.secrets["gcp_service_account"]["universe_domain"]
+        }
+
+        creds = Credentials.from_service_account_info(gcp_service_account_info)
+        drive_service = build('drive', 'v3', credentials=creds)
+        st.success("Successfully connected to Google Drive!")
+        return drive_service
+    except Exception as e:
+        st.error(f"Error connecting to Google Drive: {e}")
+        st.info("Please ensure your `.streamlit/secrets.toml` is correctly configured and your service account has access to the Google Drive folder.")
+        return None
+
+def upload_model_to_drive(drive_service, folder_id, file_path, mime_type):
+    try:
+        file_name = os.path.basename(file_path)
+        
+        # Check if file exists in Drive already
+        file_list = drive_service.files().list(
+            q=f"'{folder_id}' in parents and name='{file_name}'",
+            fields="files(id)"
+        ).execute()
+        
+        files_found = file_list.get('files', [])
+        
+        if files_found:
+            # Update existing file
+            file_id = files_found[0]['id']
+            file_metadata = {'name': file_name, 'parents': [folder_id]} # Update metadata with parents
+            media_body = MediaFileUpload(file_path, mimetype=mime_type, resumable=True)
+            drive_service.files().update(fileId=file_id, body=file_metadata, media_body=media_body, fields='id').execute()
+            st.info(f"Updated existing file on Drive: {file_name}")
+        else:
+            # Create new file
+            file_metadata = {'name': file_name, 'parents': [folder_id]}
+            media_body = MediaFileUpload(file_path, mimetype=mime_type, resumable=True)
+            drive_service.files().create(body=file_metadata, media_body=media_body, fields='id').execute()
+            st.info(f"Uploaded new file to Drive: {file_name}")
+        return True
+    except Exception as e:
+        st.error(f"Error uploading {file_name} to Google Drive: {e}")
+        return False
+
+def download_model_from_drive(drive_service, folder_id, file_name, local_path):
+    try:
+        file_list = drive_service.files().list(
+            q=f"'{folder_id}' in parents and name='{file_name}'",
+            fields="files(id)"
+        ).execute()
+
+        files_found = file_list.get('files', [])
+        if not files_found:
+            st.warning(f"'{file_name}' not found in Google Drive folder.")
+            return False
+
+        file_id = files_found[0]['id']
+        request = drive_service.files().get_media(fileId=file_id)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while done is False:
+            status, done = downloader.next_chunk()
+            # print(f"Download progress: {int(status.progress() * 100)}%") # Optional: for debugging download
+        
+        with open(local_path, 'wb') as f:
+            f.write(fh.getvalue())
+        st.info(f"Downloaded '{file_name}' from Google Drive.")
+        return True
+    except Exception as e:
+        st.error(f"Error downloading '{file_name}' from Google Drive: {e}")
+        return False
+
+# CORRECTED FUNCTION DEFINITION
 def delete_model_files_from_drive(drive_service, folder_id):
     """Deletes old model and label encoder files from the specified Google Drive folder."""
     try:
@@ -119,812 +252,324 @@ def delete_model_files_from_drive(drive_service, folder_id):
         # It's okay if deletion fails, especially if files don't exist or permissions are off.
         # Just log the error and continue.
         st.error(f"Error deleting old model files from Google Drive: {e}")
-        
-def upload_model_to_drive():
-    gc, drive_service = get_gspread_and_drive_clients()
-    if gc is None or drive_service is None:
-        st.error("Could not connect to Google Drive to upload files.")
-        return
 
-    model_path = 'prediction_model.joblib'
-    encoder_path = 'label_encoder.joblib'
-
-    if not os.path.exists(model_path) or not os.path.exists(encoder_path):
-        st.error("Local AI model files not found. Please train the model first.")
-        return
-
-    try:
-        # First, delete existing files to avoid duplicates and ensure clean upload
-        st.info("Deleting old AI model files from Google Drive before uploading new ones...")
-        delete_model_files_from_drive() # Use the updated delete function
-
-        uploaded_count = 0
-
-        # Upload model file
-        file_metadata_model = {'name': 'prediction_model.joblib', 'parents': [MODEL_FOLDER_ID]}
-        media_model = MediaFileUpload(model_path, mimetype='application/octet-stream', resumable=True) # Specify mimetype
-        file_model = drive_service.files().create(body=file_metadata_model, media_body=media_model, fields='id').execute()
-        uploaded_count += 1
-
-        # Upload encoder file
-        file_metadata_encoder = {'name': 'label_encoder.joblib', 'parents': [MODEL_FOLDER_ID]}
-        media_encoder = MediaFileUpload(encoder_path, mimetype='application/octet-stream', resumable=True) # Specify mimetype
-        file_encoder = drive_service.files().create(body=file_metadata_encoder, media_body=media_encoder, fields='id').execute()
-        uploaded_count += 1
-        
-        st.success(f"Successfully uploaded {uploaded_count} AI model files to Google Drive.")
-
-    except Exception as e:
-        st.error(f"Error uploading AI model to Google Drive: {e}")
-
-# @st.cache_data # <-- UNCOMMENT THIS LINE if it's commented out in your file.
-def load_all_historical_rounds_from_sheet():
-    gc, _ = get_gspread_and_drive_clients()
-    if gc is None:
-        # Return empty DataFrame with all expected columns if client failed
-        return pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
-
-    try:
-        spreadsheet = gc.open("Casino Card Game Log")
-        worksheet = spreadsheet.worksheet("Sheet1")
-        data = worksheet.get_all_records()
-        if data:
-            df = pd.DataFrame(data)
-            # Ensure column names are consistent
-            df.columns = df.columns.str.replace(' ', '_')
-
-            # --- AGGRESSIVE CLEANING FOR 'Outcome' COLUMN ---
-            df['Outcome'] = df['Outcome'].astype(str).str.strip() # Convert to string, remove whitespace
-
-            # Create a temporary column to hold the standardized short form (O, U, E)
-            df['Standard_Outcome_Char'] = df['Outcome'].apply(lambda x: {
-                "Over 21": "O",
-                "Under 21": "U",
-                "Exactly 21": "E"
-            }.get(x, x[0] if isinstance(x, str) and x and x[0] in ['O', 'U', 'E'] else None))
-
-            # Now, map these standardized chars back to the full strings
-            df['Outcome'] = df['Standard_Outcome_Char'].map({
-                "O": "Over 21",
-                "U": "Under 21",
-                "E": "Exactly 21"
-            })
-            # Drop the temporary column
-            df = df.drop(columns=['Standard_Outcome_Char'])
-            # --- END AGGRESSIVE CLEANING ---
-
-            # Filter out any outcomes that are still not in our expected list after cleaning
-            valid_outcomes = ['Over 21', 'Under 21', 'Exactly 21']
-            df = df[df['Outcome'].isin(valid_outcomes)]
-
-            # Ensure Deck_ID is handled correctly, even if it wasn't in original data or was problematic
-            if 'Deck_ID' in df.columns:
-                df['Deck_ID'] = pd.to_numeric(df['Deck_ID'], errors='coerce').fillna(1).astype(int)
-            else:
-                df['Deck_ID'] = 1 # Default to 1 if not found
-
-            # Ensure 'Timestamp' is datetime type for consistency
-            if 'Timestamp' in df.columns:
-                # Coerce errors will turn invalid dates into NaT (Not a Time)
-                df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
-                # Fill NaT with a default timestamp if needed (e.g., yesterday)
-                df['Timestamp'] = df['Timestamp'].fillna(datetime.now() - timedelta(days=1))
-            else:
-                # If timestamp column is missing, assign a default
-                df['Timestamp'] = datetime.now() - timedelta(days=1)
-
-            return df
-        else:
-            # Return empty DataFrame with all expected columns if no data found
-            return pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
-    except SpreadsheetNotFound:
-        st.error(f"Google Sheet 'Casino Card Game Log' not found. Please ensure the sheet exists and the service account has access.")
-        return pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
-    except Exception as e:
-        st.error(f"Error loading historical rounds from Google Sheet: {e}. Starting with empty history.")
-        return pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
-        
-# Ensure this is at the top with other imports: import os, joblib, sklearn, pandas, etc.
-# MODEL_FOLDER_ID must be defined at the top level of your script, outside functions.
-
+# --- ML Model Training and Prediction ---
 def train_and_save_prediction_model():
-    # Get both gspread client and pydrive2 drive client
-    gc, drive = get_gspread_and_drive_clients()
-
-    if not (gc and drive): # Check if both clients were successfully obtained
-        st.error("AI model training failed. Could not connect to Google Cloud (Sheets or Drive).")
-        return False
-
-    st.info("Preparing data for AI model training...")
-    all_rounds_df = load_all_historical_rounds_from_sheet() # This function should have the strong cleaning logic
-
+    st.write("Preparing data for AI model training...")
+    all_rounds_df = load_all_historical_rounds_from_sheet()
+    
     if all_rounds_df.empty:
         st.warning("No historical data available to train the AI model.")
         # If no data, delete old models from Drive
-        delete_model_files_from_drive(drive, MODEL_FOLDER_ID) # Pass drive client and folder ID
+        drive = get_drive_service()
+        if drive:
+            delete_model_files_from_drive(drive, MODEL_FOLDER_ID) # Pass drive object and folder ID
         return False
 
-    # Filter for today's data (if you still want this specific filter)
-    if 'Timestamp' in all_rounds_df.columns:
-        all_rounds_df['Timestamp'] = pd.to_datetime(all_rounds_df['Timestamp'], errors='coerce')
-        all_rounds_df.dropna(subset=['Timestamp'], inplace=True)
-        today = datetime.now().strftime("%Y-%m-%d")
-        recent_rounds_df = all_rounds_df[all_rounds_df['Timestamp'].dt.strftime("%Y-%m-%d") == today].copy()
-    else:
-        st.warning("No 'Timestamp' column found in historical data. Training on all available data.")
-        recent_rounds_df = all_rounds_df.copy() # Train on all data if no timestamp column
+    # Filter out columns that are not features or target
+    feature_cols = ['Card 1 Value', 'Card 2 Value', 'Card 3 Value', 'Dealer Card Value', 'Player Sum']
+    target_col = 'Round Outcome'
 
-    MIN_ROUNDS_FOR_TRAINING = 4 # You might want to adjust this threshold or remove for testing
-    if len(recent_rounds_df) < MIN_ROUNDS_FOR_TRAINING:
-        st.warning(f"Not enough recent rounds data to train the AI model. Need at least {MIN_ROUNDS_FOR_TRAINING} rounds from today. Found {len(recent_rounds_df)}. Training on ALL available data instead.")
-        recent_rounds_df = all_rounds_df.copy()
-        if len(recent_rounds_df) < MIN_ROUNDS_FOR_TRAINING:
-            st.warning(f"Still not enough total historical data. Need at least {MIN_ROUNDS_FOR_TRAINING} rounds. Found {len(recent_rounds_df)}.")
-            return False
+    # Ensure all feature columns exist and are numeric, drop rows with NaN in these critical columns
+    required_cols = feature_cols + [target_col]
+    all_rounds_df_cleaned = all_rounds_df.dropna(subset=required_cols).copy()
 
-
-    # Extract features (X) and labels (y)
-    for col in ['Card1', 'Card2', 'Card3', 'Sum']:
-        if col in recent_rounds_df.columns:
-            recent_rounds_df[col] = pd.to_numeric(recent_rounds_df[col], errors='coerce').fillna(0)
-        else:
-            st.warning(f"Missing column '{col}'. Filling with zeros for training.")
-            recent_rounds_df[col] = 0
-
-    recent_rounds_df.dropna(subset=['Card1', 'Card2', 'Card3', 'Sum'], inplace=True)
-
-    X = recent_rounds_df[['Card1', 'Card2', 'Card3', 'Sum']]
-    y = recent_rounds_df['Outcome']
-
-    valid_outcomes = ['Over 21', 'Under 21', 'Exactly 21']
-    y = y[y.isin(valid_outcomes)]
-
-    if X.empty or y.empty or len(X) != len(y):
-        st.error("After data preparation, features (X) or outcomes (y) are empty or mismatched. AI model training failed.")
-        delete_model_files_from_drive(drive, MODEL_FOLDER_ID) # Pass drive client and folder ID
+    if all_rounds_df_cleaned.empty:
+        st.warning("No complete historical data (after cleaning missing values) to train the AI model.")
+        drive = get_drive_service()
+        if drive:
+            delete_model_files_from_drive(drive, MODEL_FOLDER_ID)
         return False
 
-    le = LabelEncoder()
+    X = all_rounds_df_cleaned[feature_cols]
+    y = all_rounds_df_cleaned[target_col]
+
+    # Check for sufficient unique classes in target variable
+    unique_outcomes = y.unique()
+    if len(unique_outcomes) < 2:
+        st.warning(f"Not enough diverse outcomes in your data ({len(unique_outcomes)} found). Need at least two different outcomes (e.g., 'Over 21', 'Under 21', 'Exactly 21') to train the AI model.")
+        drive = get_drive_service()
+        if drive:
+            delete_model_files_from_drive(drive, MODEL_FOLDER_ID)
+        return False
+    
+    st.write(f"Training AI model with {len(X)} samples.")
+    
     try:
-        le.fit(['Over 21', 'Under 21', 'Exactly 21']) # Ensure these are the only expected outcomes
-    except Exception as e:
-        st.error(f"Error fitting LabelEncoder: {e}. Check expected outcomes.")
-        return False
+        # Fit LabelEncoder
+        label_encoder = LabelEncoder()
+        label_encoder.fit(y) # Fit on all possible outcomes in the data
 
-    try:
-        y_encoded = le.transform(y)
-    except ValueError as e:
-        st.error(f"Error during encoding: {e}. This likely means an outcome appeared in your data that the LabelEncoder was not fitted on. Ensure your sheet data is clean and matches expected outcomes ('Over 21', 'Under 21', 'Exactly 21').")
-        st.error("AI model training failed. See messages above.")
-        delete_model_files_from_drive(drive, MODEL_FOLDER_ID)
-        return False
+        # Check if all 3 expected outcomes are present after fitting (optional but good for debugging)
+        expected_outcomes = ['Player Over 21', 'Player Under 21', 'Player Exactly 21']
+        if not all(outcome in label_encoder.classes_ for outcome in expected_outcomes):
+            st.warning("The trained LabelEncoder does not contain all expected outcomes ('Player Over 21', 'Player Under 21', 'Player Exactly 21'). Ensure your historical data includes all of them.")
+            # This warning doesn't stop training, but indicates a potential future prediction issue
 
-    if len(pd.Series(y_encoded).unique()) < 2:
-        st.error(f"Error during AI model training: This solver needs samples of at least 2 classes in the data, but the data contains only one class after encoding. Found: {le.inverse_transform(pd.Series(y_encoded).unique())}")
-        st.error("AI model training failed. Please ensure your Google Sheet has rounds with different outcomes (e.g., 'Over 21' AND 'Under 21').")
-        delete_model_files_from_drive(drive, MODEL_FOLDER_ID)
-        return False
+        y_encoded = label_encoder.transform(y)
 
-    st.info(f"Training AI model with {len(X)} samples.")
-
-    model = LogisticRegression(max_iter=1000, random_state=42)
-    try:
+        # Train Logistic Regression model
+        model = LogisticRegression(max_iter=1000, random_state=42)
         model.fit(X, y_encoded)
-    except Exception as e:
-        st.error(f"Error during model fitting (Logistic Regression): {e}")
-        st.error("AI model training failed.")
-        delete_model_files_from_drive(drive, MODEL_FOLDER_ID)
-        return False
 
-    st.session_state.ai_model = model
-    st.session_state.label_encoder = le
+        # Save model and label encoder
+        model_path = 'ai_model.joblib'
+        encoder_path = 'label_encoder.joblib'
+        joblib.dump(model, model_path)
+        joblib.dump(label_encoder, encoder_path)
+        st.success("AI model and Label Encoder saved locally.")
 
-# ... (your other functions like save_ai_model, load_ai_model, get_gspread_and_drive_clients, delete_model_files_from_drive, save_ai_model_to_drive) ...
-
-def train_and_save_ai_model():
-    """
-    Handles the end-to-end process of training the AI model,
-    saving it locally, and then uploading it to Google Drive.
-    """
-    st.info("Preparing data for AI model training...")
-    all_game_data = load_all_game_data() # Assuming this function exists and loads your data
-
-    if all_game_data.empty:
-        st.warning("No game data available to train the AI model. Please add some game data.")
-        return False # Indicate failure, as no training was possible
-
-    # --- Data Preprocessing for AI Model Training ---
-    # Convert categorical outcomes to numerical labels
-    label_encoder = LabelEncoder()
-    # Assuming 'Outcome' is the column with 'Over 21'/'Under 21' labels
-    all_game_data['Outcome_Encoded'] = label_encoder.fit_transform(all_game_data['Outcome'])
-
-    # Prepare features (X) and target (y) for the model
-    # Ensure these feature columns exist in your all_game_data DataFrame
-    # Example features, adjust based on what you want to predict with
-    # These must be numeric features.
-    features = ['Player A Initial Sum', 'Player B Initial Sum', 'Dealer Initial Sum', 
-                'Player A Final Sum', 'Player B Final Sum', 'Dealer Final Sum',
-                'Number of Rounds Played'] # Adjust these features as per your data
-    
-    # Filter data to ensure only rows with all required features are used for training
-    training_data = all_game_data.dropna(subset=features + ['Outcome_Encoded'])
-
-    if training_data.empty:
-        st.warning("Not enough complete data after preprocessing to train the AI model. Check your data and feature columns.")
-        return False
-
-    X = training_data[features]
-    y = training_data['Outcome_Encoded']
-
-    st.info(f"Training AI model with {len(X)} samples.")
-
-    # Train the Logistic Regression model
-    model = LogisticRegression(max_iter=1000, solver='liblinear') # Increased max_iter for convergence
-    model.fit(X, y)
-
-    st.session_state.ai_model = model
-    st.session_state.label_encoder = label_encoder
-
-    # --- Step 1: Save the trained model locally ---
-    local_save_success = save_ai_model(model, label_encoder) # 'label_encoder' is your trained LabelEncoder
-
-    if local_save_success:
-        st.info("Attempting to upload AI model to Google Drive for persistent storage...")
-        # --- Step 2: Call the Google Drive upload function ---
-        # The updated save_ai_model_to_drive function takes no arguments.
-        drive_upload_success = save_ai_model_to_drive() 
-
-        if drive_upload_success:
-            st.success("AI prediction model trained and loaded into session state!")
-            return True # Indicate overall training success
+        # Upload to Google Drive
+        drive = get_drive_service()
+        if drive:
+            # Delete old models first to avoid clutter
+            delete_model_files_from_drive(drive, MODEL_FOLDER_ID) # Ensure this call is correct
+            upload_model_to_drive(drive, MODEL_FOLDER_ID, model_path, 'application/octet-stream')
+            upload_model_to_drive(drive, MODEL_FOLDER_ID, encoder_path, 'application/octet-stream')
+            st.success("AI model and Label Encoder uploaded to Google Drive.")
         else:
-            st.error("Failed to save AI model to Google Drive. Training complete but model not persistently stored.")
-            return False
-    else:
-        st.error("Failed to save AI model locally. Training complete but model not persistently stored.")
-        return False
-    
-# Ensure these imports are at the very top of your file:
-# from googleapiclient.http import MediaFileUpload
-# import os # You should already have this
-# And make sure you have the corrected delete_model_files_from_drive() function in your file.
-
-def save_ai_model_to_drive(): # Updated signature: No arguments needed
-    """
-    Uploads the trained AI model and label encoder from local files to Google Drive.
-    This function replaces the old PyDrive2 logic.
-    It assumes 'prediction_model.joblib' and 'label_encoder.joblib' exist locally.
-    """
-    gc, drive_service = get_gspread_and_drive_clients()
-    if gc is None or drive_service is None:
-        st.error("Could not connect to Google Drive to upload files.")
-        return False # Indicate failure
-
-    model_path = 'prediction_model.joblib'
-    encoder_path = 'label_encoder.joblib'
-
-    # Check if local files exist before attempting to upload
-    if not os.path.exists(model_path) or not os.path.exists(encoder_path):
-        st.error("Local AI model files (prediction_model.joblib or label_encoder.joblib) not found."
-                 " Please ensure the model was trained and saved locally before attempting to upload to Drive.")
-        return False # Indicate failure
-
-    try:
-        st.info("Deleting old AI model files from Google Drive before uploading new ones...")
-        # This calls the delete_model_files_from_drive() function, which is now correct
-        delete_success = delete_model_files_from_drive() 
-        
-        # Proceed only if deletion was successful or no files existed to delete
-        if not delete_success and delete_success is not None: # None means get_gspread_and_drive_clients failed
-            st.warning("Skipping upload as deletion of old files failed.")
-            return False
-
-        uploaded_count = 0
-
-        # Upload model file
-        file_metadata_model = {'name': 'prediction_model.joblib', 'parents': [MODEL_FOLDER_ID]}
-        media_model = MediaFileUpload(model_path, mimetype='application/octet-stream', resumable=True)
-        drive_service.files().create(body=file_metadata_model, media_body=media_model, fields='id').execute()
-        uploaded_count += 1
-
-        # Upload encoder file
-        file_metadata_encoder = {'name': 'label_encoder.joblib', 'parents': [MODEL_FOLDER_ID]}
-        media_encoder = MediaFileUpload(encoder_path, mimetype='application/octet-stream', resumable=True)
-        drive_service.files().create(body=file_metadata_encoder, media_body=media_encoder, fields='id').execute()
-        uploaded_count += 1
-        
-        st.success(f"Successfully uploaded {uploaded_count} AI model files to Google Drive.")
-        return True # Indicate success
-
-    except Exception as e:
-        st.error(f"Error uploading AI model to Google Drive: {e}")
-        return False # Indicate failure
-        
-def save_ai_model(model, label_encoder):
-    """Saves the trained AI model and label encoder to local files."""
-    try:
-        joblib.dump(model, 'prediction_model.joblib')
-        joblib.dump(label_encoder, 'label_encoder.joblib')
-        st.success("AI model saved locally.")
+            st.warning("Could not upload model to Google Drive due to connection error.")
+            
+        st.session_state.ai_model = model
+        st.session_state.label_encoder = label_encoder
+        st.success("AI Model training complete and loaded into session!")
         return True
     except Exception as e:
-        st.error(f"Error saving AI model locally: {e}")
+        st.error(f"AI model training failed. See messages above.")
+        st.exception(e) # This will print the full traceback in the Streamlit logs
         return False
 
-@st.cache_data
-def load_ai_model_from_drive():
-    st.info("Attempting to load AI model from Google Drive...")
-    gc, drive_service = get_gspread_and_drive_clients()
-    if gc is None or drive_service is None:
-        return None, None
+def load_prediction_model():
+    if 'ai_model' in st.session_state and 'label_encoder' in st.session_state:
+        st.success("AI Model loaded from session state.")
+        return True
+    
+    st.info("Attempting to load AI Model from Google Drive...")
+    drive = get_drive_service()
+    if not drive:
+        return False
 
-    temp_model_path = 'prediction_model_downloaded.joblib'
-    temp_encoder_path = 'label_encoder_downloaded.joblib'
+    model_path = 'ai_model.joblib'
+    encoder_path = 'label_encoder.joblib'
 
-    try:
-        query = f"'{MODEL_FOLDER_ID}' in parents and trashed=false and (name='prediction_model.joblib' or name='label_encoder.joblib')"
-        results = drive_service.files().list(q=query, fields="files(id, name)").execute()
-        items = results.get('files', [])
+    # Download from Drive
+    model_downloaded = download_model_from_drive(drive, MODEL_FOLDER_ID, 'ai_model.joblib', model_path)
+    encoder_downloaded = download_model_from_drive(drive, MODEL_FOLDER_ID, 'label_encoder.joblib', encoder_path)
 
-        model_file_id = None
-        encoder_file_id = None
-        for item in items:
-            if item['name'] == "prediction_model.joblib":
-                model_file_id = item['id']
-            elif item['name'] == "label_encoder.joblib":
-                encoder_file_id = item['id']
-
-        if not model_file_id or not encoder_file_id:
-            st.warning("AI Model or Label Encoder files not found on Google Drive. Please train and upload the model.")
-            return None, None
-
-        # Download model file
-        request_model = drive_service.files().get_media(fileId=model_file_id)
-        fh_model = io.BytesIO()
-        downloader_model = MediaIoBaseDownload(fh_model, request_model)
-        done = False
-        while done is False:
-            status, done = downloader_model.next_chunk()
-        with open(temp_model_path, 'wb') as f:
-            f.write(fh_model.getvalue())
-
-        # Download encoder file
-        request_encoder = drive_service.files().get_media(fileId=encoder_file_id)
-        fh_encoder = io.BytesIO()
-        downloader_encoder = MediaIoBaseDownload(fh_encoder, request_encoder)
-        done = False
-        while done is False:
-            status, done = downloader_encoder.next_chunk()
-        with open(temp_encoder_path, 'wb') as f:
-            f.write(fh_encoder.getvalue())
-
-        # Load models
-        model = joblib.load(temp_model_path)
-        encoder = joblib.load(temp_encoder_path)
-        
-        st.session_state.ai_model = model
-        st.session_state.label_encoder = encoder
-        st.sidebar.success("AI Prediction Model Loaded from Google Drive.")
-        return model, encoder
-
-    except Exception as e:
-        st.error(f"Error loading AI model from Google Drive: {e}")
-        return None, None
-    finally:
-        # Clean up temporary downloaded files
-        if os.path.exists(temp_model_path): 
-            os.remove(temp_model_path)
-        if os.path.exists(temp_encoder_path): 
-            os.remove(temp_encoder_path)
-
-
-
-def load_rounds():
-    gc, _ = get_gspread_and_drive_clients() # Corrected
-    if not gc:
-        st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
-        st.session_state.played_cards = set(PLAYER_A_FIXED_CARDS_STR)
-        return
-
-    try:
-        spreadsheet = gc.open("Casino Card Game Log")
-        worksheet = spreadsheet.worksheet("Sheet1")
-
-        data = worksheet.get_all_records()
-        if data:
-            df = pd.DataFrame(data)
-            df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
-            if 'Deck_ID' not in df.columns:
-                df['Deck_ID'] = 1
-            df['Deck_ID'] = df['Deck_ID'].astype(int)
-            st.session_state.rounds = df
-        else:
-            st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
-
-    except SpreadsheetNotFound:
-        st.error("Google Sheet 'Casino Card Game Log' not found. Please ensure the name is correct and it's shared with the service account.")
-        st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
-    except Exception as e:
-        st.error(f"Error loading rounds from Google Sheet: {e}. Starting with empty history.")
-        st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
-
-    st.session_state.played_cards = set()
-
-    if not st.session_state.rounds.empty:
-        current_deck_rounds = st.session_state.rounds[st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id]
-        for _, row in current_deck_rounds.iterrows():
-            st.session_state.played_cards.add(row['Card1'])
-            st.session_state.played_cards.add(row['Card2'])
-            st.session_state.played_cards.add(row['Card3'])
-
-    for card in PLAYER_A_FIXED_CARDS_STR:
-        st.session_state.played_cards.add(card)
-
-
-def save_rounds():
-    gc, _ = get_gspread_and_drive_clients() # Corrected
-    if not gc:
-        st.warning("Cannot save rounds: Google Sheets client not available.")
-        return
-
-    try:
-        spreadsheet = gc.open("Casino Card Game Log")
-        worksheet = spreadsheet.worksheet("Sheet1")
-
-        data_to_write = [st.session_state.rounds.columns.tolist()] + st.session_state.rounds.astype(str).values.tolist()
-
-        worksheet.clear()
-        worksheet.update(range_name='A1', values=data_to_write)
-        
-
-    except gspread.exceptions.SpreadsheetNotFound:
-        st.error("Cannot save: Google Sheet 'Casino Card Game Log' not found. Please create the sheet and share it correctly.")
-    except Exception as e:
-        st.error(f"Error saving rounds to Google Sheet: {e}")
-
-def get_current_streak(df):
-    if df.empty:
-        return None, 0
-
-    current_outcome = df.iloc[-1]['Outcome']
-    streak_count = 0
-    for i in range(len(df) - 1, -1, -1):
-        if df.iloc[i]['Outcome'] == current_outcome:
-            streak_count += 1
-        else:
-            break
-    return current_outcome, streak_count
-
-def predict_next_outcome_from_pattern(df_all_rounds, pattern_sequence):
-    if df_all_rounds.empty or not pattern_sequence:
-        return None, 0
-
-    next_outcomes = []
-    pattern_len = len(pattern_sequence)
-
-    for deck_id, deck_df in df_all_rounds.groupby('Deck_ID'):
-        outcomes_in_deck = deck_df['Outcome'].tolist()
-
-        for i in range(len(outcomes_in_deck) - pattern_len):
-            if outcomes_in_deck[i : i + pattern_len] == pattern_sequence:
-                if (i + pattern_len) < len(outcomes_in_deck):
-                    next_outcomes.append(outcomes_in_deck[i + pattern_len])
-
-    if not next_outcomes:
-        return None, 0
-
-    outcome_counts = pd.Series(next_outcomes).value_counts()
-    most_likely_outcome = outcome_counts.index[0]
-    confidence_percentage = (outcome_counts.iloc[0] / len(next_outcomes)) * 100
-
-    return most_likely_outcome, confidence_percentage
-
-def find_patterns(df, patterns_to_watch):
-    pattern_counts = {name: 0 for name in patterns_to_watch.keys()}
-    outcomes = df['Outcome'].tolist()
-
-    for pattern_name, pattern_sequence in patterns_to_watch.items():
-        pattern_len = len(pattern_sequence)
-        for i in range(len(outcomes) - pattern_len + 1):
-            if outcomes[i:i+pattern_len] == pattern_sequence:
-                pattern_counts[pattern_name] += 1
-    return pattern_counts
-
-def reset_deck():
-    st.session_state.current_deck_id += 1
-    st.session_state.played_cards = set()
-
-    for card in PLAYER_A_FIXED_CARDS_STR:
-        st.session_state.played_cards.add(card)
-
-    st.success(f"Starting New Deck: Deck {st.session_state.current_deck_id}. Played cards reset for this deck.")
-
-# --- AI Model Initialization (Call load_ai_model_from_drive here, before session state or UI) ---
-# This loads the model once when the app starts from Google Drive
-# This MUST be placed here, at the very top level of your script,
-# before any st.session_state access or Streamlit UI elements are defined.
-ai_model_initial_load, label_encoder_initial_load = load_ai_model_from_drive()
-
-
-# --- Session State Initialization ---
-if 'rounds' not in st.session_state:
-    st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
-
-if 'current_deck_id' not in st.session_state:
-    # Use the corrected function call here
-    temp_gc, _ = get_gspread_and_drive_clients()
-    temp_df = pd.DataFrame()
-    if temp_gc:
+    if model_downloaded and encoder_downloaded:
         try:
-            temp_spreadsheet = temp_gc.open("Casino Card Game Log")
-            temp_worksheet = temp_spreadsheet.worksheet("Sheet1")
-            temp_data = temp_worksheet.get_all_records()
-            if temp_data:
-                temp_df = pd.DataFrame(temp_data)
-                if 'Deck_ID' in temp_df.columns and not temp_df.empty:
-                    st.session_state.current_deck_id = temp_df['Deck_ID'].max()
-                else:
-                    st.session_state.current_deck_id = 1
-            else:
-                st.session_state.current_deck_id = 1
-        except Exception:
-            st.session_state.current_deck_id = 1
+            st.session_state.ai_model = joblib.load(model_path)
+            st.session_state.label_encoder = joblib.load(encoder_path)
+            st.success("AI Model loaded from Google Drive.")
+            return True
+        except Exception as e:
+            st.error(f"Error loading model files: {e}")
+            return False
     else:
-        st.session_state.current_deck_id = 1
+        st.warning("Could not load AI Model from Google Drive. Please train the model first.")
+        return False
 
-if 'played_cards' not in st.session_state:
-    st.session_state.played_cards = set()
-
-if 'ai_model' not in st.session_state:
-    st.session_state.ai_model = ai_model_initial_load
-if 'label_encoder' not in st.session_state:
-    st.session_state.label_encoder = label_encoder_initial_load
-
-if 'historical_patterns' not in st.session_state:
-    st.session_state.historical_patterns = pd.DataFrame(columns=['Timestamp', 'Deck_ID', 'Pattern_Name', 'Pattern_Sequence', 'Start_Round_ID', 'End_Round_ID'])
-
-
-# --- Load data on app startup ---
-load_rounds()
-
-st.title("Casino Card Game Tracker & Predictor")
-
-# --- Streamlit Sidebar ---
-st.sidebar.header(f"Current Deck: ID {st.session_state.current_deck_id}")
-if st.sidebar.button("New Deck (Reset Learning)"):
-    reset_deck()
-    st.rerun()
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("AI Model Management")
-
-if st.sidebar.button("Train/Retrain AI Model"):
-    all_historical_rounds = load_all_historical_rounds_from_sheet()
-    with st.spinner("Training AI model... This might take a moment."):
-        training_successful = train_and_save_prediction_model()
-        if training_successful:
-            st.session_state.ai_model, st.session_state.label_encoder = load_ai_model_from_drive()
-            st.rerun()
-        else:
-            st.error("AI model training failed. See messages above.")
-
-if st.session_state.ai_model and st.session_state.label_encoder:
-    st.sidebar.success("AI Model Ready: ✅")
-else:
-    st.sidebar.warning("AI Model Not Ready: ❌ (Train it!)")
-
-
-# --- Card Input Section ---
-st.header("Enter Round Details")
-
-available_cards_for_selection = [card for card in ALL_CARDS if card not in st.session_state.played_cards]
-
-card1 = st.selectbox("Select Card 1", available_cards_for_selection, key="card1_select")
-card2 = st.selectbox("Select Card 2", [c for c in available_cards_for_selection if c != card1], key="card2_select")
-card3 = st.selectbox("Select Card 3", [c for c in available_cards_for_selection if c != card1 and c != card2], key="card3_select")
-
-if card1 and card2 and card3:
-    total = card_values[card1] + card_values[card2] + card_values[card3]
-    st.write(f"**Calculated Total:** {total}")
-
-    outcome = ""
-    if total > 21:
-        outcome = "Over 21"
-        st.success("Result: Over 21")
-    elif total < 21:
-        outcome = "Under 21"
-        st.info("Result: Under 21")
-    else:
-        outcome = "Exactly 21"
-        st.warning("Result: Exactly 21")
-
-    if st.button("Add Round"):
-        timestamp = datetime.now()
-        round_id = len(st.session_state.rounds) + 1
-        new_round = {
-            'Timestamp': timestamp,
-            'Round_ID': round_id,
-            'Card1': card1,
-            'Card2': card2,
-            'Card3': card3,
-            'Sum': total,
-            'Outcome': outcome,
-            'Deck_ID': st.session_state.current_deck_id
-        }
-        st.session_state.rounds = pd.concat([st.session_state.rounds, pd.DataFrame([new_round])], ignore_index=True)
-
-        st.session_state.played_cards.add(card1)
-        st.session_state.played_cards.add(card2)
-        st.session_state.played_cards.add(card3)
-
-        save_rounds()
-        st.rerun()
-else:
-    st.write("Please select all three cards to calculate the total and add the round.")
-
-## Real-time Insights
-
-### Current Streak
-
-if not st.session_state.rounds.empty:
-    current_deck_rounds = st.session_state.rounds[st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id].copy()
-    if not current_deck_rounds.empty:
-        streak_outcome, streak_length = get_current_streak(current_deck_rounds)
-        if streak_length >= STREAK_THRESHOLD:
-            st.markdown(f"**Current Streak:** 🔥 {streak_length}x **{streak_outcome}** in a row! 🔥")
-        elif streak_length > 0:
-            st.write(f"**Current Streak:** {streak_length}x {streak_outcome}")
-    else:
-        st.write("No rounds played in the current deck yet to determine a streak.")
-else:
-    st.write("No rounds played yet.")
-
-### Daily Tendency
-
-if not st.session_state.rounds.empty:
-    today_date = datetime.now().date()
-    st.session_state.rounds['Timestamp'] = pd.to_datetime(st.session_state.rounds['Timestamp'], errors='coerce')
-    daily_rounds = st.session_state.rounds[st.session_state.rounds['Timestamp'].dt.date == today_date]
-
-    if not daily_rounds.empty:
-        over_count = daily_rounds[daily_rounds['Outcome'] == 'Over 21'].shape[0]
-        under_count = daily_rounds[daily_rounds['Outcome'] == 'Under 21'].shape[0]
-        total_daily_outcomes = over_count + under_count
-
-        if total_daily_outcomes > 0:
-            over_percentage = over_count / total_daily_outcomes
-            under_percentage = under_count / total_daily_outcomes
-
-            st.write(f"**Today's Outcomes (Deck {st.session_state.current_deck_id}):**")
-            st.write(f"- Over 21: {over_count} ({over_percentage:.1%})")
-            st.write(f"- Under 21: {under_count} ({under_percentage:.1%})")
-            st.write(f"- Exactly 21: {daily_rounds[daily_rounds['Outcome'] == 'Exactly 21'].shape[0]}")
-
-            if over_percentage > OVER_UNDER_BIAS_THRESHOLD:
-                st.markdown(f"📈 **Today's Trend:** Leaning towards **Over 21**!")
-            elif under_percentage > OVER_UNDER_BIAS_THRESHOLD:
-                st.markdown(f"📉 **Today's Trend:** Leaning towards **Under 21**!")
-            else:
-                st.write("📊 **Today's Trend:** Fairly balanced between Over and Under.")
-        else:
-            st.write("No 'Over 21' or 'Under 21' outcomes recorded for today yet.")
-    else:
-        st.write("No rounds recorded for today yet.")
-else:
-    st.write("No historical rounds to analyze daily tendency.")
-
-st.header("Observed Patterns (Current Deck)")
-
-if not st.session_state.rounds.empty:
-    current_deck_rounds_for_patterns = st.session_state.rounds[st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id].copy()
-    if not current_deck_rounds_for_patterns.empty:
-        pattern_counts = find_patterns(current_deck_rounds_for_patterns, PATTERNS_TO_WATCH)
-
-        found_any_pattern = False
-        for pattern_name, count in pattern_counts.items():
-            if count > 0:
-                st.write(f"- `{pattern_name}`: Found **{count}** time(s)")
-                found_any_pattern = True
-
-        if not found_any_pattern:
-            st.write("No defined patterns observed in the current deck yet.")
-    else:
-        st.write("No rounds played in the current deck to find patterns.")
-else:
-    st.write("No historical rounds to find patterns.")
-
-
-## Prediction Module
-
-st.header("Next Round Prediction")
-
-if not st.session_state.rounds.empty:
-    current_deck_outcomes = st.session_state.rounds[st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id]['Outcome'].tolist()
-
-    predicted_by_pattern = False
-    pattern_prediction_outcome = None
-    pattern_prediction_confidence = 0
-
-    if len(current_deck_outcomes) >= 2:
-        sorted_patterns = sorted(PATTERNS_TO_WATCH.items(), key=lambda item: len(item[1]), reverse=True)
-
-        for pattern_name, pattern_sequence in sorted_patterns:
-            pattern_len = len(pattern_sequence)
-            if len(current_deck_outcomes) >= pattern_len and \
-               current_deck_outcomes[-pattern_len:] == pattern_sequence:
-
-                outcome, confidence = predict_next_outcome_from_pattern(st.session_state.rounds, pattern_sequence)
-
-                if outcome:
-                    pattern_prediction_outcome = outcome
-                    pattern_prediction_confidence = confidence
-                    st.write(f"Based on pattern `{pattern_name}` (last {pattern_len} rounds):")
-                    st.markdown(f"**Prediction:** ➡️ **{pattern_prediction_outcome}** (Confidence: {pattern_prediction_confidence:.1f}%)")
-                    predicted_by_pattern = True
-                    break
-
-    ai_model_prediction_attempted = False
-    ai_model_prediction_error_occurred = False
-
-    # The AI model predicts based on the *current hand* (Card1, Card2, Card3, Sum),
-# not based on a sequence of previous outcomes.
-# So, we need the inputs for the *current* selection
-ai_model_prediction_attempted = False
-ai_model_prediction_error_occurred = False
-
-# Only attempt AI prediction if all 3 cards are selected AND the model is loaded
-# The 'card1', 'card2', 'card3' variables are from your "Enter Round Details" section at the top.
-# They hold the currently selected cards for the *next* round to be played.
-if card1 and card2 and card3 and st.session_state.ai_model and st.session_state.label_encoder:
-    ai_model_prediction_attempted = True
-    st.markdown("---")
-    st.subheader("AI Model's Prediction for the *current hand*") # Changed text for clarity
+# --- Prediction Logic ---
+def predict_outcome(model, label_encoder, features_df):
     try:
-        # Re-calculate total here using selected cards to ensure it's up-to-date
-        # These values (card_values[card1], current_total) are the FEATURES for the prediction
-        current_total = card_values[card1] + card_values[card2] + card_values[card3]
-
-        # Create a DataFrame with the current hand's features, matching training X
-        # The model expects columns: 'Card1', 'Card2', 'Card3', 'Sum'
-        current_hand_features = pd.DataFrame({
-            'Card1': [card_values[card1]], # Value of the first selected card
-            'Card2': [card_values[card2]], # Value of the second selected card
-            'Card3': [card_values[card3]], # Value of the third selected card
-            'Sum': [current_total]          # Sum of the selected cards
-        })
-
-        # Make the prediction using the current hand's features
-        predicted_encoded_outcome = st.session_state.ai_model.predict(current_hand_features)
-        predicted_outcome_ai = st.session_state.label_encoder.inverse_transform(predicted_encoded_outcome)[0]
-
-        # Get probabilities
-        probabilities = st.session_state.ai_model.predict_proba(current_hand_features)[0] # <--- Use current_hand_features here too!
-        confidence_ai = probabilities[st.session_state.label_encoder.transform([predicted_outcome_ai])[0]] * 100
-
-        st.markdown(f"🤖 **AI Model Prediction:** ➡️ **{predicted_outcome_ai}** (Confidence: {confidence_ai:.1f}%)")
-        st.caption("Based on the currently selected cards for the next round.") # Changed caption for clarity
-
+        probabilities = model.predict_proba(features_df)[0]
+        # Create a DataFrame for display
         prob_df = pd.DataFrame({
-            'Outcome': st.session_state.label_encoder.classes_,
+            'Outcome': label_encoder.classes_,
             'Probability': probabilities
         }).sort_values(by='Probability', ascending=False)
-        st.dataframe(prob_df, hide_index=True, use_container_width=True)
-
-    except ValueError as e:
-        st.error(f"AI Model prediction error: {e}. This means the input data for prediction might be inconsistent with training data (e.g., non-numeric values for cards/sum).")
-        ai_model_prediction_error_occurred = True
+        return prob_df
     except Exception as e:
-        st.error(f"An unexpected error occurred during AI model prediction: {e}")
-        ai_model_prediction_error_occurred = True
-else:
-    # This else block covers cases where cards are not selected or model is not ready
-    if not (card1 and card2 and card3):
-        st.info("Select all three cards to see the AI Model's Prediction for this hand.")
-    elif not (st.session_state.ai_model and st.session_state.label_encoder):
-        st.info("AI Model is not loaded. Please train the model first to get predictions.")
+        st.error(f"Error during prediction: {e}")
+        return None
 
-# You can keep this part if you want a fallback message for no patterns/AI prediction, otherwise remove it
-# This specifically checks if neither pattern prediction nor AI prediction was attempted/successful
-# if not predicted_by_pattern and not ai_model_prediction_attempted:
-#     st.write("No strong pattern observed, and AI model prediction not available for this hand.")
+def analyze_patterns(historical_df):
+    recent_outcomes = historical_df['Round Outcome'].tail(PREDICTION_ROUNDS_CONSIDERED).tolist()
+    st.subheader("Pattern Analysis")
+    predicted_by_pattern = False
+
+    if len(recent_outcomes) >= 2:
+        for pattern_name, pattern_sequence in PATTERNS_TO_WATCH.items():
+            if len(recent_outcomes) >= len(pattern_sequence) and recent_outcomes[-len(pattern_sequence):] == pattern_sequence:
+                if pattern_name.endswith('_U'):
+                    st.write(f"Strong Pattern '{pattern_name}' observed! Prediction: **Player Under 21** for the next round.")
+                    predicted_by_pattern = True
+                elif pattern_name.endswith('_O'):
+                    st.write(f"Strong Pattern '{pattern_name}' observed! Prediction: **Player Over 21** for the next round.")
+                    predicted_by_pattern = True
+                elif pattern_name.endswith('_E'):
+                    st.write(f"Strong Pattern '{pattern_name}' observed! Prediction: **Player Exactly 21** for the next round.")
+                    predicted_by_pattern = True
+                else: # For 2-outcome patterns without explicit next round prediction
+                     st.write(f"Pattern '{pattern_name}' observed in recent rounds.")
+                     predicted_by_pattern = True
+
+    # Simple bias detection if no strong pattern
+    if not predicted_by_pattern and len(recent_outcomes) > 5:
+        over_21_count = recent_outcomes.count('Player Over 21')
+        under_21_count = recent_outcomes.count('Player Under 21')
+        exactly_21_count = recent_outcomes.count('Player Exactly 21')
+
+        total_considered = over_21_count + under_21_count + exactly_21_count
+
+        if total_considered > 0:
+            over_bias = over_21_count / total_considered
+            under_bias = under_21_count / total_considered
+            exactly_bias = exactly_21_count / total_considered
+
+            if over_bias > OVER_UNDER_BIAS_THRESHOLD and over_bias > under_bias and over_bias > exactly_bias:
+                st.info(f"Recent rounds show a bias towards 'Over 21' ({over_bias:.1%}). Consider 'Player Under 21' for next round.")
+                predicted_by_pattern = True
+            elif under_bias > OVER_UNDER_BIAS_THRESHOLD and under_bias > over_bias and under_bias > exactly_bias:
+                st.info(f"Recent rounds show a bias towards 'Under 21' ({under_bias:.1%}). Consider 'Player Over 21' for next round.")
+                predicted_by_pattern = True
+            elif exactly_bias > OVER_UNDER_BIAS_THRESHOLD and exactly_bias > over_bias and exactly_bias > under_bias:
+                st.info(f"Recent rounds show a bias towards 'Exactly 21' ({exactly_bias:.1%}).")
+                predicted_by_pattern = True
+
+    if not predicted_by_pattern:
+        st.info("No strong patterns or biases observed in recent rounds.")
+    
+    return predicted_by_pattern
+
+
+# --- Main App ---
+st.set_page_config(layout="wide", page_title="Casino Card Game Tracker & Predictor")
+
+st.title("🃏 Casino Card Game Tracker & Predictor")
+
+# Initialize session state for AI model and encoder
+if 'ai_model' not in st.session_state:
+    st.session_state.ai_model = None
+if 'label_encoder' not in st.session_state:
+    st.session_state.label_encoder = None
+
+# Sidebar for Model Management
+with st.sidebar:
+    st.header("AI Model Management")
+    ai_model_status_placeholder = st.empty()
+    
+    if st.session_state.ai_model and st.session_state.label_encoder:
+        ai_model_status_placeholder.success("AI Model Ready: ✅")
+    else:
+        ai_model_status_placeholder.warning("AI Model Not Ready: ❌ (Train it!)")
+        
+    if st.button("Train/Retrain AI Model"):
+        ai_model_status_placeholder.info("Training AI model... This might take a moment.")
+        with st.spinner("Training AI model... This might take a moment."):
+            training_successful = train_and_save_prediction_model()
+            if training_successful:
+                ai_model_status_placeholder.success("AI Model Ready: ✅")
+                st.rerun() # Rerun to update the status and potentially enable predictions
+            else:
+                ai_model_status_placeholder.error("AI Model training failed. See messages above.")
+    
+    # Check if model can be loaded from Drive on initial load if not in session
+    if not (st.session_state.ai_model and st.session_state.label_encoder):
+        if load_prediction_model():
+            ai_model_status_placeholder.success("AI Model Ready: ✅")
+            st.rerun() # Rerun to update the status and enable predictions
+
+# Card Selection Inputs
+st.header("Log New Round")
+
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    card1_str = st.selectbox("Player Card 1", ['-'] + all_cards_list, key="p1")
+    card1_value = card_values.get(card1_str[:-1], 0) if card1_str != '-' else 0
+
+with col2:
+    card2_str = st.selectbox("Player Card 2", ['-'] + all_cards_list, key="p2")
+    card2_value = card_values.get(card2_str[:-1], 0) if card2_str != '-' else 0
+
+with col3:
+    card3_str = st.selectbox("Player Card 3", ['-'] + all_cards_list, key="p3")
+    card3_value = card_values.get(card3_str[:-1], 0) if card3_str != '-' else 0
+
+player_sum = card1_value + card2_value + card3_value
+st.metric("Player Hand Sum", player_sum)
+
+with col4:
+    dealer_card_str = st.selectbox("Dealer Card", ['-'] + all_cards_list, key="d1")
+    dealer_card_value = card_values.get(dealer_card_str[:-1], 0) if dealer_card_str != '-' else 0
+
+st.subheader("Round Outcome")
+outcome = st.radio(
+    "What was the round outcome for the Player?",
+    ('Player Over 21', 'Player Under 21', 'Player Exactly 21'),
+    index=1 # Default to Under 21
+)
+
+if st.button("Log Round to Google Sheet"):
+    if player_sum == 0 or dealer_card_value == 0:
+        st.error("Please select all three player cards and the dealer's card before logging.")
+    else:
+        round_data = {
+            'Date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'Card 1': card1_str,
+            'Card 1 Value': card1_value,
+            'Card 2': card2_str,
+            'Card 2 Value': card2_value,
+            'Card 3': card3_str,
+            'Card 3 Value': card3_value,
+            'Dealer Card': dealer_card_str,
+            'Dealer Card Value': dealer_card_value,
+            'Player Sum': player_sum,
+            'Round Outcome': outcome
+        }
+        log_round_to_sheet(round_data)
+
+# --- Display Recent History ---
+st.header("Recent Game History")
+historical_df = load_all_historical_rounds_from_sheet()
+
+if not historical_df.empty:
+    st.dataframe(historical_df.tail(10), use_container_width=True) # Display last 10 rounds
+else:
+    st.info("No game history to display. Log a round above!")
+
+# --- AI Model Prediction Section ---
+st.header("AI Model Prediction for Current Hand")
+card1_selected = card1_str != '-'
+card2_selected = card2_str != '-'
+card3_selected = card3_str != '-'
+dealer_card_selected = dealer_card_str != '-'
+
+ai_model_prediction_attempted = False
+
+if card1_selected and card2_selected and card3_selected and dealer_card_selected:
+    if st.session_state.ai_model and st.session_state.label_encoder:
+        ai_model_prediction_attempted = True
+        try:
+            # Prepare features for prediction
+            features = pd.DataFrame([[card1_value, card2_value, card3_value, dealer_card_value, player_sum]],
+                                    columns=['Card 1 Value', 'Card 2 Value', 'Card 3 Value', 'Dealer Card Value', 'Player Sum'])
+            
+            probabilities_df = predict_outcome(st.session_state.ai_model, st.session_state.label_encoder, features)
+            if probabilities_df is not None:
+                st.subheader("AI Model's Predicted Probabilities")
+                st.write("Based on your historical data, the AI model predicts the following probabilities for this hand:")
+                st.dataframe(probabilities_df, hide_index=True, use_container_width=True)
+                
+                # Highlight highest probability outcome
+                best_outcome = probabilities_df.iloc[0]['Outcome']
+                best_prob = probabilities_df.iloc[0]['Probability']
+                st.info(f"AI Model's Top Prediction: **{best_outcome}** with **{best_prob:.1%}** probability for the next round.")
+            else:
+                st.warning("Could not generate AI model prediction for this hand.")
+
+        except ValueError as e:
+            st.error(f"AI Model prediction error: {e}. This means the input data for prediction might be inconsistent with training data (e.g., non-numeric values for cards/sum).")
+            ai_model_prediction_error_occurred = True
+        except Exception as e:
+            st.error(f"An unexpected error occurred during AI model prediction: {e}")
+            ai_model_prediction_error_occurred = True
+    else:
+        st.info("AI Model is not loaded. Please train the model first to get predictions.")
+else:
+    st.info("Select all three player cards and the dealer card to see the AI Model's Prediction for this hand.")
+
+# --- Pattern Analysis Section ---
+if not historical_df.empty:
+    predicted_by_pattern = analyze_patterns(historical_df)
