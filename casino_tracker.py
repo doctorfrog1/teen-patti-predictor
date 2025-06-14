@@ -3,9 +3,9 @@ import pandas as pd
 from datetime import datetime, timedelta
 import gspread
 from gspread.exceptions import SpreadsheetNotFound
-import os # Keep this for local file operations like model saving
+import os
 import joblib
-import json # To parse the service account key
+import json
 
 # Machine Learning imports
 from sklearn.preprocessing import LabelEncoder
@@ -14,6 +14,8 @@ from sklearn.linear_model import LogisticRegression
 # Correct Google Authentication import for service accounts
 from google.oauth2.service_account import Credentials # For gspread
 from googleapiclient.discovery import build # For Google Drive API
+from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload # <--- ADDED THESE IMPORTS
+import io # Needed for downloading files
 
 # --- Configuration ---
 MODEL_FOLDER_ID = "1CZepfjRZxWV_wfmEQuZLnbj9H2yAS9Ac" # Your Google Drive Folder ID
@@ -230,7 +232,6 @@ def download_model_from_drive(drive_service, folder_id, file_name, local_path):
         st.error(f"Error downloading '{file_name}' from Google Drive: {e}")
         return False
 
-# CORRECTED FUNCTION DEFINITION
 def delete_model_files_from_drive(drive_service, folder_id):
     """Deletes old model and label encoder files from the specified Google Drive folder."""
     try:
