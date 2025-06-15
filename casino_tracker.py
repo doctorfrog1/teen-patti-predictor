@@ -738,7 +738,6 @@ if not st.session_state.rounds.empty:
             st.subheader("🤖 AI Model's Prediction for the *Next Round* (based on recent outcomes)")
             
             try:
-                try:
                 # Get the last PREDICTION_ROUNDS_CONSIDERED outcomes from the current deck
                 recent_outcomes_for_lags = current_deck_outcomes[-PREDICTION_ROUNDS_CONSIDERED:]
                 
