@@ -280,7 +280,7 @@ def train_ai_model(df):
         print(f"DEBUG (TRAINING): Deck {deck_id} has {len(outcomes_in_deck)} outcomes.")
 
         if len(outcomes_in_deck) > PREDICTION_ROUNDS_CONSIDERED:
-            for i in range(len(outcomes_in_deck) - PREDICTION_ROUNDS_CONSIDERED):
+            for i in range(len(deck_df) - PREDICTION_ROUNDS_CONSIDERED + 1):
                 # Features are the last PREDICTION_ROUNDS_CONSIDERED outcomes
                 lagged_outcomes = outcomes_in_deck[i : i + PREDICTION_ROUNDS_CONSIDERED]
                 # Label is the outcome immediately following the lagged sequence
@@ -840,26 +840,32 @@ if not st.session_state.rounds.empty:
                 proba_output = st.session_state.ai_model.predict_proba(X_predict)
                 probabilities = proba_output[0] # Probabilities for the single prediction instance
 
-                # Create a mapping from model's internal class encoding to its probability column index
-                # The model's `classes_` attribute tells us the order of classes for `predict_proba` output
-                model_classes_map = {cls: idx for idx, cls in enumerate(st.session_state.ai_model.classes_)}
+                # Create a mapping from model's internal class encoding (integer) to its string label
+                # This ensures we can get the human-readable string names for the classes the model trained on.
+                model_string_classes = st.session_state.label_encoder.inverse_transform(st.session_state.ai_model.classes_)
+                
+                # Now create the map from string label to the probability column index
+                # This map will have keys like 'Over 21', 'Under 21', and values like 0, 1 (indices into the probabilities array)
+                model_classes_map = {cls_str: idx for idx, cls_str in enumerate(model_string_classes)}
 
                 # Get the model's internal encoding for the predicted outcome string
                 # This ensures we are looking up the correct probability based on what the model actually outputs
                 if predicted_outcome_ai in model_classes_map:
                     model_internal_index = model_classes_map[predicted_outcome_ai]
                     confidence_ai = probabilities[model_internal_index] * 100
+                    # This print statement should now correctly show the internal index
+                    print(f"DEBUG (PREDICTION): Model internal index for predicted outcome: {model_internal_index}")
                 else:
                     # If the predicted outcome was not one the model was trained to output directly
-                    # (e.g., 'Exactly 21' if the training data never had it as a 'next_outcome')
                     confidence_ai = 0.0 # Assign 0% confidence if the model didn't learn to predict it
                     st.warning(f"AI Model did not output probability for '{predicted_outcome_ai}'. Setting confidence to 0%. This usually means the model was not trained on this specific outcome class in the historical data.")
+                    print(f"DEBUG (PREDICTION): Model internal index for predicted outcome: N/A (Class not in model_classes_map)")
+
 
                 # DEBUG PRINTS (keep these updated ones)
                 print(f"DEBUG (PREDICTION): Raw probabilities output shape: {proba_output.shape}")
                 print(f"DEBUG (PREDICTION): Model's classes_ attribute: {st.session_state.ai_model.classes_.tolist()}")
                 print(f"DEBUG (PREDICTION): Predicted outcome string: {predicted_outcome_ai}")
-                print(f"DEBUG (PREDICTION): Model internal index for predicted outcome: {model_internal_index if 'model_internal_index' in locals() else 'N/A'}")
                 print(f"DEBUG (PREDICTION): Confidence calculated: {confidence_ai:.1f}%")
 
                 # Corrected indentation for the display elements
@@ -867,7 +873,7 @@ if not st.session_state.rounds.empty:
                 st.caption(f"Based on the last {PREDICTION_ROUNDS_CONSIDERED} outcomes in the current deck.")
 
                 prob_df = pd.DataFrame({
-                    'Outcome': st.session_state.label_encoder.classes_,
+                    'Outcome': model_string_classes, # <-- CHANGE THIS LINE to use the actual string classes the model outputs
                     'Probability': probabilities
                 }).sort_values(by='Probability', ascending=False)
                 st.dataframe(prob_df, hide_index=True, use_container_width=True)
