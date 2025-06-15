@@ -823,7 +823,14 @@ if not st.session_state.rounds.empty:
                 print(f"DEBUG (PREDICTION): Shape of X_predict (features for prediction): {X_predict.shape}")
                 print(f"DEBUG (PREDICTION): Columns of X_predict: {X_predict.columns.tolist()}")
 
-
+                # --- NEW DEBUG PRINTS FOR PREDICTION INPUT ---
+                print(f"DEBUG (PREDICTION): Shape of X_predict BEFORE prediction: {X_predict.shape}")
+                print(f"DEBUG (PREDICTION): Columns of X_predict BEFORE prediction: {X_predict.columns.tolist()}")
+                if hasattr(st.session_state.ai_model, 'feature_columns_'):
+                    print(f"DEBUG (PREDICTION): Model's expected feature columns: {st.session_state.ai_model.feature_columns_}")
+                if hasattr(st.session_state.ai_model, 'n_features_in_'):
+                    print(f"DEBUG (PREDICTION): Model's expected number of features (n_features_in_): {st.session_state.ai_model.n_features_in_}")
+                # --- END NEW DEBUG PRINTS ---
                 predicted_encoded_outcome = st.session_state.ai_model.predict(X_predict)
                 predicted_outcome_ai = st.session_state.label_encoder.inverse_transform(predicted_encoded_outcome)[0]
 
