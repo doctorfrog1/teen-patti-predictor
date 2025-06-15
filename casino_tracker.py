@@ -818,7 +818,7 @@ if not st.session_state.rounds.empty:
 
                 # Final check on feature count
                 if X_predict.shape[1] != PREDICTION_ROUNDS_CONSIDERED:
-                     raise ValueError(f"Feature mismatch: Expected {PREDICTION_ROUNDS_CONSIDERED} features but got {X_predict.shape[1]}.")
+                    raise ValueError(f"Feature mismatch: Expected {PREDICTION_ROUNDS_CONSIDERED} features but got {X_predict.shape[1]}.")
 
                 # DEBUG PRINTS
                 print(f"DEBUG (PREDICTION): Shape of X_predict (features for prediction): {X_predict.shape}")
@@ -832,6 +832,7 @@ if not st.session_state.rounds.empty:
                 if hasattr(st.session_state.ai_model, 'n_features_in_'):
                     print(f"DEBUG (PREDICTION): Model's expected number of features (n_features_in_): {st.session_state.ai_model.n_features_in_}")
                 # --- END NEW DEBUG PRINTS ---
+
                 predicted_encoded_outcome = st.session_state.ai_model.predict(X_predict)
                 predicted_outcome_ai = st.session_state.label_encoder.inverse_transform(predicted_encoded_outcome)[0]
 
@@ -861,14 +862,15 @@ if not st.session_state.rounds.empty:
                 print(f"DEBUG (PREDICTION): Model internal index for predicted outcome: {model_internal_index if 'model_internal_index' in locals() else 'N/A'}")
                 print(f"DEBUG (PREDICTION): Confidence calculated: {confidence_ai:.1f}%")
 
-                        st.markdown(f"➡️ **{predicted_outcome_ai}** (Confidence: {confidence_ai:.1f}%)")
-                        st.caption(f"Based on the last {PREDICTION_ROUNDS_CONSIDERED} outcomes in the current deck.")
+                # Corrected indentation for the display elements
+                st.markdown(f"➡️ **{predicted_outcome_ai}** (Confidence: {confidence_ai:.1f}%)")
+                st.caption(f"Based on the last {PREDICTION_ROUNDS_CONSIDERED} outcomes in the current deck.")
 
-                    prob_df = pd.DataFrame({
-                        'Outcome': st.session_state.label_encoder.classes_,
-                        'Probability': probabilities
-                    }).sort_values(by='Probability', ascending=False)
-                    st.dataframe(prob_df, hide_index=True, use_container_width=True)
+                prob_df = pd.DataFrame({
+                    'Outcome': st.session_state.label_encoder.classes_,
+                    'Probability': probabilities
+                }).sort_values(by='Probability', ascending=False)
+                st.dataframe(prob_df, hide_index=True, use_container_width=True)
 
             except ValueError as e:
                 st.error(f"AI Model prediction error: {e}. Ensure historical outcomes are consistent with model training and the LabelEncoder.")
