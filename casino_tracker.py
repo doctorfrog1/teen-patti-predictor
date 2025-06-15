@@ -301,7 +301,11 @@ def train_ai_model(df):
     # Encode categorical outcomes
     label_encoder = LabelEncoder()
     try:
-        y_encoded = label_encoder.fit_transform(y)
+        # **FIX 1: Explicitly fit LabelEncoder on all possible outcomes**
+        all_possible_outcomes = ['Over 21', 'Under 21', 'Exactly 21']
+        label_encoder.fit(all_possible_outcomes) # Ensure encoder knows all categories
+
+        y_encoded = label_encoder.transform(y)
         X_encoded = X.apply(lambda col: label_encoder.transform(col) if col.name.startswith('Outcome_Lag') else col)
         print(f"DEBUG (TRAINING): LabelEncoder classes after fit_transform: {label_encoder.classes_.tolist()}")
     except ValueError as e:
@@ -310,12 +314,15 @@ def train_ai_model(df):
         return None, None
 
     print(f"DEBUG (TRAINING): Shape of X_encoded: {X_encoded.shape}")
+    print(f"DEBUG (TRAINING): Columns of X_encoded: {X_encoded.columns.tolist()}") # Debug print for columns
     print(f"DEBUG (TRAINING): Shape of y_encoded: {y_encoded.shape}")
 
     # Train a Logistic Regression model
     try:
         model = LogisticRegression(max_iter=1000, random_state=42) # Increased max_iter
         model.fit(X_encoded, y_encoded)
+        # **FIX 2: Store feature names on the model after training**
+        model.feature_columns_ = X_encoded.columns.tolist()
         st.success("AI Model trained successfully.")
         print("DEBUG (TRAINING): Model training successful.")
         return model, label_encoder
@@ -799,13 +806,23 @@ if not st.session_state.rounds.empty:
 
                 X_predict = pd.DataFrame(prediction_features_dict)
 
+                # **FIX 3: Ensure prediction features match trained model's features**
+                if hasattr(st.session_state.ai_model, 'feature_columns_'):
+                    expected_features = st.session_state.ai_model.feature_columns_
+                    # Reorder columns of X_predict to match the order the model expects
+                    X_predict = X_predict[expected_features]
+                    print(f"DEBUG (PREDICTION): Reordered X_predict columns to match model's expected features.")
+                else:
+                    print(f"DEBUG (PREDICTION): Warning: Model does not have 'feature_columns_'. Relying on strict feature generation order.")
+
+                # Final check on feature count
+                if X_predict.shape[1] != PREDICTION_ROUNDS_CONSIDERED:
+                     raise ValueError(f"Feature mismatch: Expected {PREDICTION_ROUNDS_CONSIDERED} features but got {X_predict.shape[1]}.")
+
                 # DEBUG PRINTS
                 print(f"DEBUG (PREDICTION): Shape of X_predict (features for prediction): {X_predict.shape}")
                 print(f"DEBUG (PREDICTION): Columns of X_predict: {X_predict.columns.tolist()}")
-                if hasattr(st.session_state.ai_model, 'feature_names_in_'):
-                    print(f"DEBUG (PREDICTION): Model loaded feature names expected: {st.session_state.ai_model.feature_names_in_.tolist()}") # NEW DEBUG PRINT
-                else:
-                    print(f"DEBUG (PREDICTION): Loaded model has no feature_names_in_ attribute.") # NEW DEBUG PRINT
+
 
                 predicted_encoded_outcome = st.session_state.ai_model.predict(X_predict)
                 predicted_outcome_ai = st.session_state.label_encoder.inverse_transform(predicted_encoded_outcome)[0]
