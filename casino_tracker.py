@@ -273,6 +273,7 @@ def train_ai_model(df):
     # Create lagged features for sequence prediction
     features = []
     labels = []
+    label_encoder = None # Initialize label_encoder outside the loop
 
     # Iterate through each deck separately
     for deck_id, deck_df in df_sorted.groupby('Deck_ID'):
@@ -280,11 +281,11 @@ def train_ai_model(df):
         print(f"DEBUG (TRAINING): Deck {deck_id} has {len(outcomes_in_deck)} outcomes.")
 
         if len(outcomes_in_deck) > PREDICTION_ROUNDS_CONSIDERED:
-            for i in range(len(deck_df) - PREDICTION_ROUNDS_CONSIDERED + 1):
-                # Features are the last PREDICTION_ROUNDS_CONSIDERED outcomes
-                lagged_outcomes = outcomes_in_deck[i : i + PREDICTION_ROUNDS_CONSIDERED]
-                # Label is the outcome immediately following the lagged sequence
-                next_outcome = outcomes_in_deck[i + PREDICTION_ROUNDS_CONSIDERED]
+            for i in range(len(deck_df) - PREDICTION_ROUNDS_CONSIDERED): # <--- CHANGE THIS LINE
+                # Features are the last PREDICTION_ROUNDS_CONSIDERED outcomes
+                lagged_outcomes = outcomes_in_deck[i : i + PREDICTION_ROUNDS_CONSIDERED]
+                # Label is the outcome immediately following the lagged sequence
+                next_outcome = outcomes_in_deck[i + PREDICTION_ROUNDS_CONSIDERED] # This will now be safe
 
                 feature_dict = {f'Outcome_Lag{j+1}': outcome for j, outcome in enumerate(reversed(lagged_outcomes))} # Reverse to match conventional lag order
                 features.append(feature_dict)
