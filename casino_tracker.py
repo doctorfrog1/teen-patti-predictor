@@ -281,7 +281,7 @@ def train_ai_model(df):
         print(f"DEBUG (TRAINING): Deck {deck_id} has {len(outcomes_in_deck)} outcomes.")
 
         if len(outcomes_in_deck) > PREDICTION_ROUNDS_CONSIDERED:
-            for i in range(len(deck_df) - PREDICTION_ROUNDS_CONSIDERED): # <--- CHANGE THIS LINE
+            for i in range(len(deck_df) - PREDICTION_ROUNDS_CONSIDERED):
                 # Features are the last PREDICTION_ROUNDS_CONSIDERED outcomes
                 lagged_outcomes = outcomes_in_deck[i : i + PREDICTION_ROUNDS_CONSIDERED]
                 # Label is the outcome immediately following the lagged sequence
