@@ -297,6 +297,7 @@ def train_ai_model(df):
 
     X = pd.DataFrame(features)
     y = pd.Series(labels)
+    print(f"DEBUG (TRAINING): Value counts of y (labels) before encoding: \n{y.value_counts()}")
 
     # Encode categorical outcomes
     label_encoder = LabelEncoder()
@@ -832,21 +833,33 @@ if not st.session_state.rounds.empty:
                     print(f"DEBUG (PREDICTION): Model's expected number of features (n_features_in_): {st.session_state.ai_model.n_features_in_}")
                 # --- END NEW DEBUG PRINTS ---
                 predicted_encoded_outcome = st.session_state.ai_model.predict(X_predict)
-                predicted_outcome_ai = st.session_state.label_encoder.inverse_transform(predicted_encoded_outcome)[0]
+            predicted_outcome_ai = st.session_state.label_encoder.inverse_transform(predicted_encoded_outcome)[0]
 
-                # --- NEW DEBUG PRINTS FOR PROBABILITIES AND INDEXING ---
-                # Call predict_proba once and store it
-                proba_output = st.session_state.ai_model.predict_proba(X_predict)
-                print(f"DEBUG (PREDICTION): Raw probabilities output shape: {proba_output.shape}")
-                probabilities = proba_output[0] # Get the probabilities for the single prediction
+            # Get raw probabilities from the model
+            proba_output = st.session_state.ai_model.predict_proba(X_predict)
+            probabilities = proba_output[0] # Probabilities for the single prediction instance
 
-                # Calculate the index and check its value
-                index_for_confidence = st.session_state.label_encoder.transform([predicted_outcome_ai])[0]
-                print(f"DEBUG (PREDICTION): Index calculated for confidence: {index_for_confidence}")
-                print(f"DEBUG (PREDICTION): Size of probabilities array for confidence: {probabilities.shape[0]}")
-                # --- END NEW DEBUG PRINTS ---
+            # Create a mapping from model's internal class encoding to its probability column index
+            # The model's `classes_` attribute tells us the order of classes for `predict_proba` output
+            model_classes_map = {cls: idx for idx, cls in enumerate(st.session_state.ai_model.classes_)}
 
-                confidence_ai = probabilities[index_for_confidence] * 100 # This line is causing the error
+            # Get the model's internal encoding for the predicted outcome string
+            # This ensures we are looking up the correct probability based on what the model actually outputs
+            if predicted_outcome_ai in model_classes_map:
+                model_internal_index = model_classes_map[predicted_outcome_ai]
+                confidence_ai = probabilities[model_internal_index] * 100
+            else:
+                # If the predicted outcome was not one the model was trained to output directly
+                # (e.g., 'Exactly 21' if the training data never had it as a 'next_outcome')
+                confidence_ai = 0.0 # Assign 0% confidence if the model didn't learn to predict it
+                st.warning(f"AI Model did not output probability for '{predicted_outcome_ai}'. Setting confidence to 0%. This usually means the model was not trained on this specific outcome class in the historical data.")
+
+            # DEBUG PRINTS (keep these updated ones)
+            print(f"DEBUG (PREDICTION): Raw probabilities output shape: {proba_output.shape}")
+            print(f"DEBUG (PREDICTION): Model's classes_ attribute: {st.session_state.ai_model.classes_.tolist()}")
+            print(f"DEBUG (PREDICTION): Predicted outcome string: {predicted_outcome_ai}")
+            print(f"DEBUG (PREDICTION): Model internal index for predicted outcome: {model_internal_index if 'model_internal_index' in locals() else 'N/A'}")
+            print(f"DEBUG (PREDICTION): Confidence calculated: {confidence_ai:.1f}%")
 
                 st.markdown(f"➡️ **{predicted_outcome_ai}** (Confidence: {confidence_ai:.1f}%)")
                 st.caption(f"Based on the last {PREDICTION_ROUNDS_CONSIDERED} outcomes in the current deck.")
