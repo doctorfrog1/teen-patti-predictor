@@ -282,7 +282,7 @@ def train_ai_model(df):
 
         if len(outcomes_in_deck) > PREDICTION_ROUNDS_CONSIDERED:
             for i in range(len(deck_df) - PREDICTION_ROUNDS_CONSIDERED):
-                # Features are the last PREDICTION_ROUNDS_CONSIDERED outcomes
+                # Features are the last PREDICTION_ROUNDS_CONSIDERED outcomes
                 lagged_outcomes = outcomes_in_deck[i : i + PREDICTION_ROUNDS_CONSIDERED]
                 # Label is the outcome immediately following the lagged sequence
                 next_outcome = outcomes_in_deck[i + PREDICTION_ROUNDS_CONSIDERED] # This will now be safe
