@@ -284,8 +284,8 @@ def train_ai_model(df):
             for i in range(len(deck_df) - PREDICTION_ROUNDS_CONSIDERED):
                 # Features are the last PREDICTION_ROUNDS_CONSIDERED outcomes
                 lagged_outcomes = outcomes_in_deck[i : i + PREDICTION_ROUNDS_CONSIDERED]
-                # Label is the outcome immediately following the lagged sequence
-                next_outcome = outcomes_in_deck[i + PREDICTION_ROUNDS_CONSIDERED] # This will now be safe
+                # Lable is the outcome immediately following the lagged sequence
+                next_outcome = outcomes_in_deck[i + PREDICTION_ROUNDS_CONSIDERED]
 
                 feature_dict = {f'Outcome_Lag{j+1}': outcome for j, outcome in enumerate(reversed(lagged_outcomes))} # Reverse to match conventional lag order
                 features.append(feature_dict)
