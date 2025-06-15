@@ -230,14 +230,22 @@ def train_ai_model(df):
     st.info("Training AI Model... This may take a moment.")
     print("Starting train_ai_model function (for sequence prediction)...")
 
+    # NEW DEBUG PRINT: Check columns before sorting
+    print(f"DEBUG (TRAINING): Columns in df received by train_ai_model: {df.columns.tolist()}")
+
+    # Check if 'Deck_ID' actually exists before sorting
+    if 'Deck_ID' not in df.columns:
+        st.error("Error: 'Deck_ID' column is missing in the data. Cannot train AI model. Please ensure your data has a 'Date' column and is not empty.")
+        return None, None # Exit early if critical column is missing
+
     df_sorted = df.sort_values(by=['Deck_ID', 'Round']).copy()
 
     # Ensure LabelEncoder is fitted on all unique outcomes that exist in the data
     # This prevents issues with unseen labels during transformation
     le = LabelEncoder()
     # Fit on all unique outcomes in the entire historical data
-    le.fit(df_sorted['Outcome'].unique()) # <--- CRITICAL CHANGE: Ensure LabelEncoder is fitted
-    print(f"DEBUG (TRAINING): LabelEncoder classes after fit: {le.classes_.tolist()}") # NEW DEBUG PRINT
+    le.fit(df_sorted['Outcome'].unique())
+    print(f"DEBUG (TRAINING): LabelEncoder classes after fit: {le.classes_.tolist()}")
 
     df_sorted['Outcome_Encoded'] = le.transform(df_sorted['Outcome'])
 
@@ -277,6 +285,7 @@ def train_ai_model(df):
 
     st.success("AI Model trained successfully!")
     return model, le
+
     
 # This is the function called by the sidebar button.
 def train_and_save_prediction_model():
