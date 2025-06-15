@@ -227,99 +227,57 @@ def load_all_historical_rounds_from_sheet():
 
 # This is the 'train_ai_model' function, now updated for sequence prediction.
 def train_ai_model(df):
-    print("Starting train_ai_model function (for sequence prediction)...") # DEBUG
-    if df.empty:
-        st.warning("DataFrame is empty. Cannot train.") # DEBUG
-        return None, None
+    st.info("Training AI Model... This may take a moment.")
+    print("Starting train_ai_model function (for sequence prediction)...")
 
-    # Need enough rounds for lags and a target outcome
-    MIN_ROUNDS_FOR_TRAINING = PREDICTION_ROUNDS_CONSIDERED + 1 
-    if len(df) < MIN_ROUNDS_FOR_TRAINING:
-        st.warning(f"Not enough data to train the AI model for sequence prediction. Need at least {MIN_ROUNDS_FOR_TRAINING} rounds. Found {len(df)}.")
-        print(f"DEBUG: Not enough data ({len(df)}) for sequence training.") # DEBUG
-        return None, None
+    df_sorted = df.sort_values(by=['Deck_ID', 'Round']).copy()
 
-    # Ensure Outcome column is consistent and filter invalid outcomes
-    df['Outcome'] = df['Outcome'].astype(str).str.strip()
-    valid_outcomes = ['Over 21', 'Under 21', 'Exactly 21']
-    df = df[df['Outcome'].isin(valid_outcomes)].copy() # Filter and make a copy to avoid SettingWithCopyWarning
-
-    if df.empty:
-        st.warning("DataFrame is empty after filtering invalid outcomes. Cannot train.")
-        return None, None
-
+    # Ensure LabelEncoder is fitted on all unique outcomes that exist in the data
+    # This prevents issues with unseen labels during transformation
     le = LabelEncoder()
-    try:
-        # Fit LabelEncoder on ALL valid outcomes
-        le.fit(valid_outcomes)
-    except Exception as e:
-        st.error(f"Error fitting LabelEncoder: {e}. Check expected outcomes.")
-        print(f"DEBUG: LabelEncoder fit error: {traceback.format_exc()}")
-        return None, None
+    # Fit on all unique outcomes in the entire historical data
+    le.fit(df_sorted['Outcome'].unique()) # <--- CRITICAL CHANGE: Ensure LabelEncoder is fitted
+    print(f"DEBUG (TRAINING): LabelEncoder classes after fit: {le.classes_.tolist()}") # NEW DEBUG PRINT
 
-    # Sort for correct lagging within each deck
-    df_sorted = df.sort_values(by=['Deck_ID', 'Timestamp']).copy()
-    
-    # Encode the outcome for use in lagged features and for the target variable
     df_sorted['Outcome_Encoded'] = le.transform(df_sorted['Outcome'])
 
-    # Create lagged features (Outcome_Lag1 is the most recent past outcome, Outcome_LagN is the oldest)
+    # Create lagged features
     lag_features = []
-    for i in range(1, PREDICTION_ROUNDS_CONSIDERED + 1): 
+    for i in range(1, PREDICTION_ROUNDS_CONSIDERED + 1):
         col_name = f'Outcome_Lag{i}'
-        # Shift within each Deck_ID group to avoid cross-deck contamination for lags
         df_sorted[col_name] = df_sorted.groupby('Deck_ID')['Outcome_Encoded'].shift(i)
         lag_features.append(col_name)
 
-    # Drop rows where lagged features are NaN (these are the first few rows in each deck that don't have enough history)
     df_train = df_sorted.dropna(subset=lag_features).copy()
 
-    # Define X (features are the lagged outcomes) and y (target is the current outcome)
+    if df_train.empty:
+        st.warning("Not enough data to train the AI model after creating lagged features. Please record more rounds.")
+        return None, None
+
     X = df_train[lag_features]
     y_encoded = df_train['Outcome_Encoded']
 
-    if X.empty or y_encoded.empty or len(X) != len(y_encoded):
-        st.error("After data preparation for sequence prediction, features (X) or outcomes (y) are empty or mismatched. AI model training aborted.")
-        print(f"DEBUG: X empty ({X.empty}), y_encoded empty ({y_encoded.empty}), len mismatch ({len(X)} vs {len(y_encoded)}). Aborting training.")
+    if y_encoded.nunique() < 2:
+        st.warning("Not enough unique outcomes in the training data to train a classification model. Need at least 2 distinct outcomes.")
         return None, None
 
-    if len(y_encoded.unique()) < 2:
-        st.error(f"Error during AI model training: This solver needs samples of at least 2 classes in the data, but the data contains only one class after encoding. Found: {le.inverse_transform(y_encoded.unique())}")
-        st.error("AI model training failed. Please ensure your Google Sheet has rounds with different outcomes (e.g., 'Over 21' AND 'Under 21').")
-        print(f"DEBUG: Only one class found in encoded y: {y_encoded.unique()}. Aborting training.")
-        return None, None
-
-    st.info(f"Training AI model with {len(X)} samples for sequence prediction.")
-    print(f"DEBUG: Starting Logistic Regression training for sequence prediction with {len(X)} samples.")
-
-    # Inside train_ai_model function, before model.fit()
-    X = df_train[lag_features] # Ensure this line is present
-    y_encoded = df_train['Outcome_Encoded'] # Ensure this line is present
-
+    print(f"DEBUG (TRAINING): Starting Logistic Regression training for sequence prediction with {len(X)} samples.")
     print(f"DEBUG (TRAINING): Shape of X (features): {X.shape}")
     print(f"DEBUG (TRAINING): Columns of X (features): {X.columns.tolist()}")
-    print(f"DEBUG (TRAINING): Number of unique outcomes in y_encoded: {len(y_encoded.unique())}")
+    print(f"DEBUG (TRAINING): Number of unique outcomes in y_encoded: {y_encoded.nunique()}")
 
     model = LogisticRegression(max_iter=1000, random_state=42)
+    model.fit(X, y_encoded)
 
-    try:
-        model.fit(X, y_encoded)
-        print("DEBUG: Model fitted successfully for sequence prediction.")
-        # Inside train_ai_model function, after model.fit()
-        print(f"DEBUG (TRAINING): Model fitted successfully for sequence prediction.")
-        if hasattr(model, 'feature_names_in_'):
-            print(f"DEBUG (TRAINING): Model feature names learned: {model.feature_names_in_.tolist()}")
-        else:
-            print(f"DEBUG (TRAINING): Model has no feature_names_in_ attribute.")
-        
-    except Exception as e:
-        st.error(f"Error during model fitting (Logistic Regression) for sequence prediction: {e}")
-        st.error("AI model training failed.")
-        print(f"DEBUG: Model fitting error: {traceback.format_exc()}")
-        return None, None
+    print(f"DEBUG: Model fitted successfully for sequence prediction.")
+    if hasattr(model, 'feature_names_in_'):
+        print(f"DEBUG (TRAINING): Model feature names learned: {model.feature_names_in_.tolist()}")
+    else:
+        print(f"DEBUG (TRAINING): Model has no feature_names_in_ attribute.")
 
+    st.success("AI Model trained successfully!")
     return model, le
-
+    
 # This is the function called by the sidebar button.
 def train_and_save_prediction_model():
     gc, drive_service = get_gspread_and_drive_clients()
@@ -780,23 +738,22 @@ if not st.session_state.rounds.empty:
             st.subheader("🤖 AI Model's Prediction for the *Next Round* (based on recent outcomes)")
             
             try:
+                try:
                 # Get the last PREDICTION_ROUNDS_CONSIDERED outcomes from the current deck
-                # These will be used to form the lagged features for the prediction input
                 recent_outcomes_for_lags = current_deck_outcomes[-PREDICTION_ROUNDS_CONSIDERED:]
                 
-                # --- DEBUG PRINTS START ---
+                # DEBUG PRINTS
                 print(f"DEBUG (PREDICTION): PREDICTION_ROUNDS_CONSIDERED: {PREDICTION_ROUNDS_CONSIDERED}")
                 print(f"DEBUG (PREDICTION): Length of current_deck_outcomes: {len(current_deck_outcomes)}")
                 print(f"DEBUG (PREDICTION): recent_outcomes_for_lags: {recent_outcomes_for_lags}")
-                # --- DEBUG PRINTS END ---
-
+                
                 # Encode these outcomes using the trained label encoder
                 recent_outcomes_encoded = st.session_state.label_encoder.transform(recent_outcomes_for_lags)
 
-                # --- DEBUG PRINTS START ---
+                # DEBUG PRINTS
                 print(f"DEBUG (PREDICTION): Length of recent_outcomes_encoded: {len(recent_outcomes_encoded)}")
                 print(f"DEBUG (PREDICTION): Encoded recent outcomes: {recent_outcomes_encoded}")
-                # --- DEBUG PRINTS END ---
+                print(f"DEBUG (PREDICTION): LabelEncoder classes in session state: {st.session_state.label_encoder.classes_.tolist()}") # NEW DEBUG PRINT
 
                 # Create a DataFrame for prediction matching the training features' structure
                 prediction_features_dict = {}
@@ -805,23 +762,30 @@ if not st.session_state.rounds.empty:
 
                 X_predict = pd.DataFrame(prediction_features_dict)
                 
-                # --- DEBUG PRINTS START ---
-                print(f"DEBUG (PREDICTION): Shape of X_predict (features for prediction): {X_predict.shape}")
-                print(f"DEBUG (PREDICTION): Columns of X_predict: {X_predict.columns.tolist()}")
-                # Inside the AI Model's Prediction section, before the predict() call
+                # DEBUG PRINTS
                 print(f"DEBUG (PREDICTION): Shape of X_predict (features for prediction): {X_predict.shape}")
                 print(f"DEBUG (PREDICTION): Columns of X_predict: {X_predict.columns.tolist()}")
                 if hasattr(st.session_state.ai_model, 'feature_names_in_'):
-                    print(f"DEBUG (PREDICTION): Model loaded feature names expected: {st.session_state.ai_model.feature_names_in_.tolist()}")
+                    print(f"DEBUG (PREDICTION): Model loaded feature names expected: {st.session_state.ai_model.feature_names_in_.tolist()}") # NEW DEBUG PRINT
                 else:
-                    print(f"DEBUG (PREDICTION): Loaded model has no feature_names_in_ attribute.")
-                # --- DEBUG PRINTS END ---
+                    print(f"DEBUG (PREDICTION): Loaded model has no feature_names_in_ attribute.") # NEW DEBUG PRINT
 
                 predicted_encoded_outcome = st.session_state.ai_model.predict(X_predict)
                 predicted_outcome_ai = st.session_state.label_encoder.inverse_transform(predicted_encoded_outcome)[0]
 
-                probabilities = st.session_state.ai_model.predict_proba(X_predict)[0]
-                confidence_ai = probabilities[st.session_state.label_encoder.transform([predicted_outcome_ai])[0]] * 100
+                # --- NEW DEBUG PRINTS FOR PROBABILITIES AND INDEXING ---
+                # Call predict_proba once and store it
+                proba_output = st.session_state.ai_model.predict_proba(X_predict)
+                print(f"DEBUG (PREDICTION): Raw probabilities output shape: {proba_output.shape}")
+                probabilities = proba_output[0] # Get the probabilities for the single prediction
+
+                # Calculate the index and check its value
+                index_for_confidence = st.session_state.label_encoder.transform([predicted_outcome_ai])[0]
+                print(f"DEBUG (PREDICTION): Index calculated for confidence: {index_for_confidence}")
+                print(f"DEBUG (PREDICTION): Size of probabilities array for confidence: {probabilities.shape[0]}")
+                # --- END NEW DEBUG PRINTS ---
+
+                confidence_ai = probabilities[index_for_confidence] * 100 # This line is causing the error
 
                 st.markdown(f"➡️ **{predicted_outcome_ai}** (Confidence: {confidence_ai:.1f}%)")
                 st.caption(f"Based on the last {PREDICTION_ROUNDS_CONSIDERED} outcomes in the current deck.")
