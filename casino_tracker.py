@@ -23,7 +23,7 @@ import io # Needed for downloading files
 
 # --- Configuration ---
 MODEL_FOLDER_ID = "1CZepfjRZxWV_wfmEQuZLnbj9H2yAS9Ac"
-PLAYER_A_FIXED_CARDS_STR = {'J?', '10?', '9?'}
+PLAYER_A_FIXED_CARDS_STR = {'J♣', '10♠', '9♠'}
 PREDICTION_ROUNDS_CONSIDERED = 10 # Number of previous rounds to consider for AI sequence prediction
 STREAK_THRESHOLD = 3
 OVER_UNDER_BIAS_THRESHOLD = 0.6
@@ -62,11 +62,12 @@ PATTERNS_TO_WATCH = {
 }
 
 card_values = {
-   'A?': 1, '2?': 2, '3?': 3, '4?': 4, '5?': 5, '6?': 6, '7?': 7, '8?': 8, '9?': 9, '10?': 10, 'J?': 11, 'Q?': 12, 'K?': 13,
-   'A?': 1, '2?': 2, '3?': 3, '4?': 4, '5?': 5, '6?': 6, '7?': 7, '8?': 8, '9?': 9, '10?': 10, 'J?': 11, 'Q?': 12, 'K?': 13,
-   'A?': 1, '2?': 2, '3?': 3, '4?': 4, '5?': 5, '6?': 6, '7?': 7, '8?': 8, '9?': 9, '10?': 10, 'J?': 11, 'Q?': 12, 'K?': 13,
-   'A?': 1, '2?': 2, '3?': 3, '4?': 4, '5?': 5, '6?': 6, '7?': 7, '8?': 8, '9?': 9, '10?': 10, 'J?': 11, 'Q?': 12, 'K?': 13
+    'A♠': 1, '2♠': 2, '3♠': 3, '4♠': 4, '5♠': 5, '6♠': 6, '7♠': 7, '8♠': 8, '9♠': 9, '10♠': 10, 'J♠': 11, 'Q♠': 12, 'K♠': 13,
+    'A♦': 1, '2♦': 2, '3♦': 3, '4♦': 4, '5♦': 5, '6♦': 6, '7♦': 7, '8♦': 8, '9♦': 9, '10♦': 10, 'J♦': 11, 'Q♦': 12, 'K♦': 13,
+    'A♣': 1, '2♣': 2, '3♣': 3, '4♣': 4, '5♣': 5, '6♣': 6, '7♣': 7, '8♣': 8, '9♣': 9, '10♣': 10, 'J♣': 11, 'Q♣': 12, 'K♣': 13,
+    'A♥': 1, '2♥': 2, '3♥': 3, '4♥': 4, '5♥': 5, '6♥': 6, '7♥': 7, '8♥': 8, '9♥': 9, '10♥': 10, 'J♥': 11, 'Q♥': 12, 'K♥': 13
 }
+
 ALL_CARDS = list(card_values.keys())
 
 # --- HELPER FUNCTIONS ---
@@ -613,9 +614,9 @@ if st.sidebar.button("Train/Retrain AI Model"):
            st.error("AI model training failed. See messages above.")
 
 if st.session_state.ai_model and st.session_state.label_encoder:
-   st.sidebar.success("AI Model Ready: ?")
+   st.sidebar.success("AI Model Ready: ✅")
 else:
-   st.sidebar.warning("AI Model Not Ready: ? (Train it!)")
+   st.sidebar.warning("AI Model Not Ready: ❌ (Train it!)")
 
 
 # --- Card Input Section ---
@@ -675,7 +676,7 @@ if not st.session_state.rounds.empty:
    if not current_deck_rounds.empty:
        streak_outcome, streak_length = get_current_streak(current_deck_rounds)
        if streak_length >= STREAK_THRESHOLD:
-           st.markdown(f"**Current Streak:** ? {streak_length}x **{streak_outcome}** in a row! ?")
+           st.markdown(f"**Current Streak:** 🔥 {streak_length}x **{streak_outcome}** in a row! 🔥")
        elif streak_length > 0:
            st.write(f"**Current Streak:** {streak_length}x {streak_outcome}")
    else:
@@ -705,11 +706,11 @@ if not st.session_state.rounds.empty:
            st.write(f"- Exactly 21: {daily_rounds[daily_rounds['Outcome'] == 'Exactly 21'].shape[0]}")
 
            if over_percentage > OVER_UNDER_BIAS_THRESHOLD:
-               st.markdown(f"? **Today's Trend:** Leaning towards **Over 21**!")
+               st.markdown(f"📈 **Today's Trend:** Leaning towards **Over 21**!")
            elif under_percentage > OVER_UNDER_BIAS_THRESHOLD:
-               st.markdown(f"? **Today's Trend:** Leaning towards **Under 21**!")
+               st.markdown(f"📉 **Today's Trend:** Leaning towards **Under 21**!")
            else:
-               st.write("? **Today's Trend:** Fairly balanced between Over and Under.")
+               st.write("📊 **Today's Trend:** Fairly balanced between Over and Under.")
        else:
            st.write("No 'Over 21' or 'Under 21' outcomes recorded for today yet.")
    else:
@@ -764,7 +765,7 @@ if not st.session_state.rounds.empty:
                    pattern_prediction_outcome = outcome
                    pattern_prediction_confidence = confidence
                    st.write(f"Based on pattern `{pattern_name}` (last {pattern_len} rounds):")
-                   st.markdown(f"**Prediction:** ? **{pattern_prediction_outcome}** (Confidence: {pattern_prediction_confidence:.1f}%)")
+                   st.markdown(f"**Prediction:** ➡️ **{pattern_prediction_outcome}** (Confidence: {pattern_prediction_confidence:.1f}%)")
                    predicted_by_pattern = True
                    break
 
@@ -782,7 +783,7 @@ if not st.session_state.rounds.empty:
        else:
            ai_model_prediction_attempted = True
            st.markdown("---")
-           st.subheader("? AI Model's Prediction for the *Next Round* (based on recent outcomes)")
+           st.subheader("🤖 AI Model's Prediction for the *Next Round* (based on recent outcomes)")
 
            try:
                # Get the last PREDICTION_ROUNDS_CONSIDERED outcomes from the current deck
@@ -870,7 +871,7 @@ if not st.session_state.rounds.empty:
                print(f"DEBUG (PREDICTION): Confidence calculated: {confidence_ai:.1f}%")
 
                # Corrected indentation for the display elements
-               st.markdown(f"? **{predicted_outcome_ai}** (Confidence: {confidence_ai:.1f}%)")
+               st.markdown(f"➡️ **{predicted_outcome_ai}** (Confidence: {confidence_ai:.1f}%)")
                st.caption(f"Based on the last {PREDICTION_ROUNDS_CONSIDERED} outcomes in the current deck.")
 
                prob_df = pd.DataFrame({
