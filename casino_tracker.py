@@ -708,17 +708,17 @@ if card1 and card2 and card3:
        save_rounds()
        st.success("Round saved successfully!") # Optional: confirmation message
       
-      # --- START OF CONTINUOUS LEARNING LOGIC (UPDATED) ---
-      st.info("New round added. Triggering AI model re-training...")
-      with st.spinner("Re-training AI model with latest data..."):
-          training_successful = train_and_save_prediction_model() # This function handles fetching, training, and saving
-          if training_successful:
-              # Reload the model into session state after successful training/saving to Drive
-              st.session_state.ai_model, st.session_state.label_encoder = load_ai_model_from_drive()
-              st.success("AI Model re-trained and updated with the latest data!")
-          else:
-              st.warning("AI Model could not be re-trained with the latest data. See logs/messages above.")
-        # --- END OF CONTINUOUS LEARNING LOGIC ---
+       # --- START OF CONTINUOUS LEARNING LOGIC (UPDATED) ---
+       st.info("New round added. Triggering AI model re-training...")
+       with st.spinner("Re-training AI model with latest data..."):
+           training_successful = train_and_save_prediction_model() # This function handles fetching, training, and saving
+           if training_successful:
+               # Reload the model into session state after successful training/saving to Drive
+               st.session_state.ai_model, st.session_state.label_encoder = load_ai_model_from_drive()
+               st.success("AI Model re-trained and updated with the latest data!")
+           else:
+               st.warning("AI Model could not be re-trained with the latest data. See logs/messages above.")
+       # --- END OF CONTINUOUS LEARNING LOGIC ---
 
        st.rerun()
 else:
