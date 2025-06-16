@@ -663,6 +663,25 @@ if card1 and card2 and card3:
        st.session_state.played_cards.add(card3)
 
        save_rounds()
+       st.success("Round saved successfully!") # Optional: confirmation message
+       # --- START OF CONTINUOUS LEARNING LOGIC ---
+
+       # 1. Re-fetch ALL historical data (including the newly added round)
+       #    Make sure your fetch_all_rounds_from_gsheet() function reliably gets the LATEST data from GS.
+       all_rounds_df = fetch_all_rounds_from_gsheet() # Assuming this function is defined elsewhere in your code
+
+       if not all_rounds_df.empty:
+          st.info("Historical data updated. Re-training AI model with new data...")
+          # 2. Call the train_ai_model function with the updated historical data
+          #    This will retrain the model and save it to session state and Google Drive.
+          trained_model, trained_label_encoder = train_ai_model(all_rounds_df) # Assuming this function is defined
+
+          if trained_model is not None and trained_label_encoder is not None:
+            st.success("AI Model re-trained and updated with the latest data!")
+          else:
+            st.warning("AI Model could not be re-trained with the latest data. Please add more diverse historical outcomes.")
+       else:
+
        st.rerun()
 else:
    st.write("Please select all three cards to calculate the total and add the round.")
