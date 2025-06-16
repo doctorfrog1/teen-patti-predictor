@@ -345,7 +345,7 @@ def prepare_prediction_features(last_n_outcomes_str, current_deck_id, current_ti
 
     return X_predict_final # Return as a DataFrame with one row
 
-@st.cache_resource(ttl="1h", experimental_allow_widgets=True)
+@st.cache_resource(ttl="1h")
 def train_ai_model(df_all_rounds):
     st.sidebar.info("Attempting to train AI model...")
 
@@ -640,61 +640,61 @@ def reset_deck():
 
    st.success(f"Starting New Deck: Deck {st.session_state.current_deck_id}. Played cards reset for this deck.")
 
-# --- AI Model Initialization (Call load_ai_model_from_drive here, before session state or UI) ---
-ai_model_initial_load, label_encoder_initial_load = load_ai_model_from_drive()
+# --- REVISED AI MODEL INITIALIZATION BLOCK ---
+# This combined block handles initializing session state, attempting to load from Drive,
+# and if necessary, triggering a re-train.
 
-# --- Session State Initialization ---
-# --- PLACE THE FOLLOWING CODE BLOCK HERE (RIGHT AFTER `save_rounds()` function definition) ---
-
-# --- Initial AI Model Training/Loading on App Startup ---
-# This code runs once when your Streamlit app starts up
-
-# Initialize session state for AI model and LabelEncoder if they don't exist
-# It's good practice to ensure these are always defined in session_state early.
+# Always ensure these are defined in session_state, as they're checked repeatedly.
 if 'ai_model' not in st.session_state:
     st.session_state.ai_model = None
 if 'label_encoder' not in st.session_state:
     st.session_state.label_encoder = None
 
-# Attempt to load the AI model from Google Drive if it hasn't been loaded yet in this session.
-# The `@st.cache_data` decorator on `load_ai_model_from_drive` will make sure
-# the actual download only happens once per run.
-if st.session_state.ai_model is None:
+# Flag to determine if we need to try training
+model_needs_training = False
+
+# Check if model is not loaded OR if it's an "old" model lacking feature_columns_
+if st.session_state.ai_model is None or not hasattr(st.session_state.ai_model, 'feature_columns_'):
+    st.sidebar.info("AI Model not found or needs update. Attempting to load from Google Drive...")
+    
+    # Attempt to load from Drive first
     loaded_model, loaded_encoder = load_ai_model_from_drive()
-    if loaded_model is not None and loaded_encoder is not None:
+    
+    if loaded_model is not None and loaded_encoder is not None and hasattr(loaded_model, 'feature_columns_'):
         st.session_state.ai_model = loaded_model
         st.session_state.label_encoder = loaded_encoder
-        # Message already shown by load_ai_model_from_drive via st.sidebar.success
+        st.sidebar.success("AI Model loaded from Drive and ready!")
+    else:
+        # If loading failed or it was an old model, flag for training
+        st.sidebar.warning("Model not found on Drive or outdated. Will attempt to train.")
+        model_needs_training = True
 
-# If the model is still not loaded after attempting to download (e.g., first run, or download failed),
-# then try to train it using historical data from the Google Sheet.
-if st.session_state.ai_model is None:
+if model_needs_training:
     # Fetch all historical data needed for training.
-    # Note: `load_all_historical_rounds_from_sheet()` is for training data,
-    # `load_rounds()` is for general app state.
     all_rounds_df_for_initial_training = load_all_historical_rounds_from_sheet()
 
     if not all_rounds_df_for_initial_training.empty:
-        st.info("AI Model not found or loaded. Attempting to train from historical data...")
+        st.info("AI Model not found or needs training. Attempting to train from historical data...")
         with st.spinner("Training AI model... This might take a moment."):
-            # `train_and_save_prediction_model()` handles the full process of training,
-            # saving locally, and uploading to Google Drive.
-            training_successful = train_and_save_prediction_model()
+            # `train_and_save_prediction_model()` should use your *modified* `train_ai_model` internally.
+            # It also handles saving locally and uploading to Google Drive.
+            training_successful = train_and_save_prediction_model() # This function should now use your updated train_ai_model
+            
             if training_successful:
                 # After successful training and upload, re-load the model into session state
                 # to ensure the app uses the newly trained model immediately.
-                # This will *also* show a success message from `load_ai_model_from_drive`.
+                # This will *also* show a success message from `load_ai_model_from_drive` if it works.
                 st.session_state.ai_model, st.session_state.label_encoder = load_ai_model_from_drive()
-                if st.session_state.ai_model:
+                if st.session_state.ai_model and hasattr(st.session_state.ai_model, 'feature_columns_'):
                     st.success("AI Model trained from historical data and ready for use!")
                 else:
-                    st.warning("AI Model trained but failed to load into session state. Check Drive permissions.")
+                    st.warning("AI Model trained but failed to load into session state (or missing features). Check Drive permissions.")
             else:
                 st.warning("AI Model could not be trained initially. Please ensure sufficient and diverse historical data (at least 2 different outcomes) in your Google Sheet.")
     else:
         st.info("No historical data available to train the AI model on app startup. Please add some rounds!")
 
-# --- END: Initial AI Model Setup ---
+# --- END OF REVISED AI MODEL INITIALIZATION BLOCK ---
 
 
 # --- Session State Initialization (Keep these, they are standard Streamlit practice) ---
