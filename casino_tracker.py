@@ -245,94 +245,183 @@ def load_all_historical_rounds_from_sheet():
        st.error(f"Error loading historical rounds from Google Sheet: {e}. Starting with empty history. Full error: {traceback.format_exc()}")
        return pd.DataFrame(columns=['Timestamp', 'Round', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID']) # Changed Round_ID to Round
 
+# --- Existing Helper Functions (Example: save_rounds function, etc.) ---
+# ... (your existing helper functions like `save_rounds`, `load_rounds`, etc.) ...
 
-def train_ai_model(df):
-   st.info("Training AI Model... This may take a moment.")
-   print("Starting train_ai_model function (for sequence prediction)...")
+# NEW HELPER FUNCTION: Extracts base features common for training and prediction
+def _get_base_features(df_input):
+    """
+    Extracts common base features like Hour_Of_Day, Day_Of_Week, Deck_Round_Number.
+    Ensures Timestamp is datetime and Deck_ID is string.
+    """
+    df = df_input.copy()
 
-   if df.empty:
-       st.error("No data available to train the AI model. Please ensure rounds are loaded from Google Sheets.")
-       print("DEBUG (TRAINING): DataFrame is empty. Exiting train_ai_model.")
-       return None, None
+    # Ensure Timestamp is datetime
+    df['Timestamp'] = pd.to_datetime(df['Timestamp'])
 
-   # NEW DEBUG PRINT: Check columns before sorting
-   print(f"DEBUG (TRAINING): Columns in df received by train_ai_model: {df.columns.tolist()}")
+    # Extract time-based features
+    df['Hour_Of_Day'] = df['Timestamp'].dt.hour
+    df['Day_Of_Week'] = df['Timestamp'].dt.dayofweek # Monday=0, Sunday=6
 
-   # Check if 'Deck_ID' actually exists before sorting
-   if 'Deck_ID' not in df.columns:
-       st.error("Error: 'Deck_ID' column is missing in the data. Cannot train AI model. Please ensure your data has a 'Deck_ID' column after loading.")
-       return None, None # Exit early if critical column is missing
+    # Calculate Deck_Round_Number (how many rounds into the current deck)
+    # This assumes df is already sorted by Timestamp for correct cumulative count
+    df['Deck_Round_Number'] = df.groupby('Deck_ID').cumcount() + 1
 
-   # Check for 'Round' column explicitly
-   if 'Round' not in df.columns:
-       st.error("Error: 'Round' column is missing in the data. Cannot train AI model. Ensure 'Round_ID' from Google Sheet is correctly renamed to 'Round'.")
-       return None, None
+    # Ensure Deck_ID is treated as a string for one-hot encoding
+    df['Deck_ID'] = df['Deck_ID'].astype(str)
 
-   df_sorted = df.sort_values(by=['Deck_ID', 'Round']).copy()
-   print(f"DEBUG (TRAINING): DataFrame sorted by Deck_ID and Round. Shape: {df_sorted.shape}")
+    return df
 
-   # Create lagged features for sequence prediction
-   features = []
-   labels = []
-   label_encoder = None # Initialize label_encoder outside the loop
+# NEW HELPER FUNCTION: Prepares features for AI model prediction
+def prepare_prediction_features(last_n_outcomes_str, current_deck_id, current_timestamp, current_deck_rounds_df, label_encoder, trained_model_feature_columns):
+    """
+    Prepares the feature DataFrame for prediction, matching the training features.
 
-   # Iterate through each deck separately
-   for deck_id, deck_df in df_sorted.groupby('Deck_ID'):
-       outcomes_in_deck = deck_df['Outcome'].tolist()
-       print(f"DEBUG (TRAINING): Deck {deck_id} has {len(outcomes_in_deck)} outcomes.")
+    Args:
+        last_n_outcomes_str (list): List of the last PREDICTION_ROUNDS_CONSIDERED outcome strings
+                                     (e.g., ['Over 21', 'Under 21', ...]). These are actual outcome strings.
+        current_deck_id (int): The ID of the current deck.
+        current_timestamp (datetime): The timestamp for the round being predicted (current time).
+        current_deck_rounds_df (pd.DataFrame): DataFrame of all rounds in the current deck so far.
+        label_encoder (LabelEncoder): The fitted LabelEncoder from training.
+        trained_model_feature_columns (list): The list of column names the model was trained on.
 
-       if len(outcomes_in_deck) > PREDICTION_ROUNDS_CONSIDERED:
-           for i in range(len(deck_df) - PREDICTION_ROUNDS_CONSIDERED):
-               # Features are the last PREDICTION_ROUNDS_CONSIDERED outcomes
-               lagged_outcomes = outcomes_in_deck[i : i + PREDICTION_ROUNDS_CONSIDERED]
-               # Lable is the outcome immediately following the lagged sequence
-               next_outcome = outcomes_in_deck[i + PREDICTION_ROUNDS_CONSIDERED]
+    Returns:
+        pd.DataFrame: A DataFrame with one row, containing features ready for prediction.
+    """
+    # Create a temporary DataFrame with a single row representing the 'next' round's context
+    predict_data = pd.DataFrame([{
+        'Timestamp': current_timestamp,
+        'Deck_ID': current_deck_id,
+        'Outcome': 'PLACEHOLDER' # This is a dummy for _get_base_features, won't be used for actual outcome
+    }])
 
-               feature_dict = {f'Outcome_Lag{j+1}': outcome for j, outcome in enumerate(reversed(lagged_outcomes))} # Reverse to match conventional lag order
-               features.append(feature_dict)
-               labels.append(next_outcome)
+    # Apply the base feature extraction
+    df_predict_processed = _get_base_features(predict_data)
 
-   if not features:
-       st.warning(f"Not enough historical data to train the AI model. Need more than {PREDICTION_ROUNDS_CONSIDERED} rounds per deck.")
-       print("DEBUG (TRAINING): No features generated. Exiting train_ai_model.")
-       return None, None
+    # Encode the last N outcomes using the provided label_encoder
+    # Ensure they are in the correct order for lags (Lag1 is most recent)
+    encoded_lags = [label_encoder.transform([outcome])[0] for outcome in last_n_outcomes_str[::-1]]
 
-   X = pd.DataFrame(features)
-   y = pd.Series(labels)
-   print(f"DEBUG (TRAINING): Value counts of y (labels) before encoding: \n{y.value_counts()}")
+    # Create lagged feature columns (Outcome_Lag1, Outcome_Lag2, etc.)
+    for i in range(1, PREDICTION_ROUNDS_CONSIDERED + 1):
+        if i <= len(encoded_lags):
+            df_predict_processed[f'Outcome_Lag{i}'] = str(encoded_lags[i-1]) # Convert encoded int to string for get_dummies
+        else:
+            # This case should ideally not happen if len(last_n_outcomes_str) matches PREDICTION_ROUNDS_CONSIDERED.
+            # If it could, you'd need a strategy like a 'missing' category, but for now we expect full lags.
+            df_predict_processed[f'Outcome_Lag{i}'] = 'MISSING_LAG' # Fallback for debugging if it happens
 
-   # Encode categorical outcomes
-   label_encoder = LabelEncoder()
-   try:
-       # **FIX 1: Explicitly fit LabelEncoder on all possible outcomes**
-       all_possible_outcomes = ['Over 21', 'Under 21', 'Exactly 21']
-       label_encoder.fit(all_possible_outcomes) # Ensure encoder knows all categories
+    # Calculate Deck_Round_Number for the *next* round
+    df_predict_processed['Deck_Round_Number'] = len(current_deck_rounds_df) + 1
 
-       y_encoded = label_encoder.transform(y)
-       X_encoded = X.apply(lambda col: label_encoder.transform(col) if col.name.startswith('Outcome_Lag') else col)
-       print(f"DEBUG (TRAINING): LabelEncoder classes after fit_transform: {label_encoder.classes_.tolist()}")
-   except ValueError as e:
-       st.error(f"Error encoding outcomes during training: {e}. Ensure your 'Outcome' column only contains expected values ('Over 21', 'Under 21', 'Exactly 21').")
-       print(f"DEBUG (TRAINING): Encoding error: {e}. Labels: {y.unique().tolist()}")
-       return None, None
+    # Define categorical features (must match `train_ai_model` exactly)
+    categorical_features_for_dummies = [f'Outcome_Lag{i}' for i in range(1, PREDICTION_ROUNDS_CONSIDERED + 1)] + \
+                                     ['Hour_Of_Day', 'Day_Of_Week', 'Deck_ID']
 
-   print(f"DEBUG (TRAINING): Shape of X_encoded: {X_encoded.shape}")
-   print(f"DEBUG (TRAINING): Columns of X_encoded: {X_encoded.columns.tolist()}") # Debug print for columns
-   print(f"DEBUG (TRAINING): Shape of y_encoded: {y_encoded.shape}")
+    # Convert relevant columns to string type for `pd.get_dummies`
+    for col in categorical_features_for_dummies:
+        if col in df_predict_processed.columns:
+            df_predict_processed[col] = df_predict_processed[col].astype(str)
 
-   # Train a Logistic Regression model
-   try:
-       model = LogisticRegression(max_iter=1000, random_state=42) # Increased max_iter
-       model.fit(X_encoded, y_encoded)
-       # **FIX 2: Store feature names on the model after training**
-       model.feature_columns_ = X_encoded.columns.tolist()
-       st.success("AI Model trained successfully.")
-       print("DEBUG (TRAINING): Model training successful.")
-       return model, label_encoder
-   except Exception as e:
-       st.error(f"Error training the Logistic Regression model: {e}. Check data integrity and feature scaling if issues persist.")
-       print(f"DEBUG (TRAINING): Model training failed: {e}")
-       return None, None
+    # Apply one-hot encoding to the single prediction row
+    X_categorical_encoded_predict = pd.get_dummies(df_predict_processed[categorical_features_for_dummies],
+                                                   columns=categorical_features_for_dummies,
+                                                   drop_first=False)
+
+    # Select numerical features (must match `train_ai_model` exactly)
+    numerical_features = ['Deck_Round_Number']
+    X_numerical_predict = df_predict_processed[numerical_features]
+
+    # Combine all features for the single row
+    X_predict_raw = pd.concat([X_categorical_encoded_predict, X_numerical_predict], axis=1)
+
+    # Ensure the prediction DataFrame has ALL the columns that the model was trained on.
+    # Fill any missing columns (e.g., if a specific 'Hour_Of_Day_10' column existed in training but not in this single prediction row) with 0.
+    X_predict_final = X_predict_raw.reindex(columns=trained_model_feature_columns, fill_value=0)
+
+    # Ensure column order matches the training order
+    X_predict_final = X_predict_final[trained_model_feature_columns]
+
+    return X_predict_final # Return as a DataFrame with one row
+
+@st.cache_resource(ttl="1h", experimental_allow_widgets=True)
+def train_ai_model(df_all_rounds):
+    st.sidebar.info("Attempting to train AI model...")
+
+    # Check for sufficient data
+    if df_all_rounds.empty or len(df_all_rounds['Outcome'].unique()) < 2:
+        st.sidebar.warning("Insufficient historical data to train the AI model. Need at least two different outcomes.")
+        return None, None
+
+    # Sort data to ensure correct lag and round number calculation
+    df_all_rounds_sorted = df_all_rounds.sort_values(by=['Deck_ID', 'Timestamp']).reset_index(drop=True)
+
+    # --- Start Feature Engineering ---
+    # Use the new helper function to get base time and deck features
+    df_processed = _get_base_features(df_all_rounds_sorted)
+
+    # Fit label encoder on all possible outcomes to ensure consistency for prediction
+    # This helps even if a specific outcome hasn't appeared in the training data yet.
+    label_encoder = LabelEncoder()
+    all_possible_outcomes = ['Over 21', 'Under 21', 'Exactly 21']
+    label_encoder.fit(all_possible_outcomes)
+    df_processed['Outcome_Encoded'] = label_encoder.transform(df_processed['Outcome'])
+
+    # Create lagged features for outcomes (using the encoded outcomes)
+    for i in range(1, PREDICTION_ROUNDS_CONSIDERED + 1):
+        # Shift based on deck to ensure lags don't cross deck boundaries
+        df_processed[f'Outcome_Lag{i}'] = df_processed.groupby('Deck_ID')['Outcome_Encoded'].shift(i)
+
+    # Filter out rows with NaN created by shifting (these are at the start of decks)
+    df_filtered = df_processed.dropna(subset=[f'Outcome_Lag{PREDICTION_ROUNDS_CONSIDERED}']).copy()
+
+    # Align the target variable (y) with the filtered features (X)
+    y_aligned = df_filtered['Outcome_Encoded']
+
+    # Define categorical features that need one-hot encoding
+    # Outcome_LagX are encoded numbers, treat them as categories for get_dummies
+    categorical_features_for_dummies = [f'Outcome_Lag{i}' for i in range(1, PREDICTION_ROUNDS_CONSIDERED + 1)] + \
+                                     ['Hour_Of_Day', 'Day_Of_Week', 'Deck_ID']
+
+    # Convert values in these columns to string type for `pd.get_dummies`
+    for col in categorical_features_for_dummies:
+        if col in df_filtered.columns:
+            df_filtered[col] = df_filtered[col].astype(str)
+
+    # Apply one-hot encoding to the defined categorical features
+    X_categorical_encoded = pd.get_dummies(df_filtered[categorical_features_for_dummies],
+                                           columns=categorical_features_for_dummies,
+                                           drop_first=False) # Keep all dummies for consistent columns
+
+    # Define numerical features (Deck_Round_Number will be directly used as a number)
+    numerical_features = ['Deck_Round_Number']
+    X_numerical = df_filtered[numerical_features]
+
+    # Combine all features (one-hot encoded and numerical)
+    X_combined = pd.concat([X_categorical_encoded, X_numerical], axis=1)
+
+    # Fill any remaining NaNs in features (should be rare if dropna was effective, but good practice)
+    X_combined = X_combined.fillna(0)
+    # --- End Feature Engineering ---
+
+    # Train the Logistic Regression model
+    model = LogisticRegression(max_iter=2000, random_state=42, solver='liblinear') # Increased max_iter and used liblinear for robustness
+    try:
+        model.fit(X_combined, y_aligned)
+
+        # Store the exact feature column names the model was trained on
+        # This is CRUCIAL for preparing prediction input correctly later
+        model.feature_columns_ = X_combined.columns.tolist()
+
+        st.sidebar.success("AI Prediction Model Trained Successfully!")
+        return model, label_encoder
+    except ValueError as e:
+        st.sidebar.error(f"Error during model training: {e}. This often means your data is not diverse enough, or there's a problem with feature scaling or sparse data. Ensure enough data with all outcome types.")
+        return None, None
+    except Exception as e:
+        st.sidebar.error(f"An unexpected error occurred during AI model training: {e}")
+        return None, None
 
 def train_and_save_prediction_model():
    all_rounds_df = load_all_historical_rounds_from_sheet()
@@ -840,123 +929,70 @@ if not st.session_state.rounds.empty:
    ai_model_prediction_attempted = False
    ai_model_prediction_error_occurred = False
 
-   if st.session_state.ai_model and st.session_state.label_encoder:
-       # Get all outcomes from the current deck for pattern and AI sequence prediction
-       current_deck_outcomes = st.session_state.rounds[st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id]['Outcome'].tolist()
+   if st.session_state.ai_model and st.session_state.label_encoder and hasattr(st.session_state.ai_model, 'feature_columns_'):
+       current_deck_rounds_df = st.session_state.rounds[st.session_state.rounds['Deck_ID'] == st.session_state.current_deck_id].copy()
+       current_deck_outcomes = current_deck_rounds_df['Outcome'].tolist()
 
-       # We need enough outcomes to create the required lagged features for prediction
        if len(current_deck_outcomes) < PREDICTION_ROUNDS_CONSIDERED:
-           st.info(f"AI Model needs at least {PREDICTION_ROUNDS_CONSIDERED} past rounds in the current deck to make a prediction (based on historical sequence). Only {len(current_deck_outcomes)} available.")
+           st.info(f"AI Model needs at least {PREDICTION_ROUNDS_CONSIDERED} past outcomes in the current deck to make a prediction (based on historical sequence, time, and deck features). Only {len(current_deck_outcomes)} available.")
            ai_model_prediction_attempted = False
        else:
            ai_model_prediction_attempted = True
            st.markdown("---")
-           st.subheader("🤖 AI Model's Prediction for the *Next Round* (based on recent outcomes)")
+           st.subheader("🤖 AI Model's Prediction for the *Next Round*")
 
            try:
-               # Get the last PREDICTION_ROUNDS_CONSIDERED outcomes from the current deck
+               # Get the last PREDICTION_ROUNDS_CONSIDERED outcomes from the current deck for lagged features
                recent_outcomes_for_lags = current_deck_outcomes[-PREDICTION_ROUNDS_CONSIDERED:]
 
-               # DEBUG PRINTS
-               print(f"DEBUG (PREDICTION): PREDICTION_ROUNDS_CONSIDERED: {PREDICTION_ROUNDS_CONSIDERED}")
-               print(f"DEBUG (PREDICTION): Length of current_deck_outcomes: {len(current_deck_outcomes)}")
-               print(f"DEBUG (PREDICTION): recent_outcomes_for_lags: {recent_outcomes_for_lags}")
+               # Pass all necessary context to the feature preparation function
+               X_predict = prepare_prediction_features(
+                   last_n_outcomes_str=recent_outcomes_for_lags,
+                   current_deck_id=st.session_state.current_deck_id,
+                   current_timestamp=datetime.now(), # Use current time for prediction context
+                   current_deck_rounds_df=current_deck_rounds_df, # Pass current deck rounds for round number calc
+                   label_encoder=st.session_state.label_encoder,
+                   trained_model_feature_columns=st.session_state.ai_model.feature_columns_
+               )
+               # --- DEBUGGING AID (You can remove these print statements after successful testing) ---
+               # print(f"DEBUG (PREDICTION): Shape of X_predict (features for prediction): {X_predict.shape}")
+               # print(f"DEBUG (PREDICTION): Columns of X_predict: {X_predict.columns.tolist()}")
+               # print(f"DEBUG (PREDICTION): X_predict data: \n{X_predict.head()}")
+               # print(f"DEBUG (TRAINING): Stored model features: {st.session_state.ai_model.feature_columns_}")
+               # --- END DEBUGGING AID ---
 
-               # Encode these outcomes using the trained label encoder
-               recent_outcomes_encoded = st.session_state.label_encoder.transform(recent_outcomes_for_lags)
-
-               # DEBUG PRINTS
-               print(f"DEBUG (PREDICTION): Length of recent_outcomes_encoded: {len(recent_outcomes_encoded)}")
-               print(f"DEBUG (PREDICTION): Encoded recent outcomes: {recent_outcomes_encoded}")
-               print(f"DEBUG (PREDICTION): LabelEncoder classes in session state: {st.session_state.label_encoder.classes_.tolist()}") # NEW DEBUG PRINT
-
-               # Create a DataFrame for prediction matching the training features' structure
-               prediction_features_dict = {}
-               for i in range(PREDICTION_ROUNDS_CONSIDERED):
-                   prediction_features_dict[f'Outcome_Lag{i+1}'] = [recent_outcomes_encoded[PREDICTION_ROUNDS_CONSIDERED - 1 - i]]
-
-               X_predict = pd.DataFrame(prediction_features_dict)
-
-               # **FIX 3: Ensure prediction features match trained model's features**
-               if hasattr(st.session_state.ai_model, 'feature_columns_'):
-                   expected_features = st.session_state.ai_model.feature_columns_
-                   # Reorder columns of X_predict to match the order the model expects
-                   X_predict = X_predict[expected_features]
-                   print(f"DEBUG (PREDICTION): Reordered X_predict columns to match model's expected features.")
-               else:
-                   print(f"DEBUG (PREDICTION): Warning: Model does not have 'feature_columns_'. Relying on strict feature generation order.")
-
-               # Final check on feature count
-               if X_predict.shape[1] != PREDICTION_ROUNDS_CONSIDERED:
-                   raise ValueError(f"Feature mismatch: Expected {PREDICTION_ROUNDS_CONSIDERED} features but got {X_predict.shape[1]}.")
-
-               # DEBUG PRINTS
-               print(f"DEBUG (PREDICTION): Shape of X_predict (features for prediction): {X_predict.shape}")
-               print(f"DEBUG (PREDICTION): Columns of X_predict: {X_predict.columns.tolist()}")
-
-               # --- NEW DEBUG PRINTS FOR PREDICTION INPUT ---
-               print(f"DEBUG (PREDICTION): Shape of X_predict BEFORE prediction: {X_predict.shape}")
-               print(f"DEBUG (PREDICTION): Columns of X_predict BEFORE prediction: {X_predict.columns.tolist()}")
-               if hasattr(st.session_state.ai_model, 'feature_columns_'):
-                   print(f"DEBUG (PREDICTION): Model's expected feature columns: {st.session_state.ai_model.feature_columns_}")
-               if hasattr(st.session_state.ai_model, 'n_features_in_'):
-                   print(f"DEBUG (PREDICTION): Model's expected number of features (n_features_in_): {st.session_state.ai_model.n_features_in_}")
-               # --- END NEW DEBUG PRINTS ---
 
                predicted_encoded_outcome = st.session_state.ai_model.predict(X_predict)
                predicted_outcome_ai = st.session_state.label_encoder.inverse_transform(predicted_encoded_outcome)[0]
 
-               # Get raw probabilities from the model
                proba_output = st.session_state.ai_model.predict_proba(X_predict)
-               probabilities = proba_output[0] # Probabilities for the single prediction instance
+               probabilities = proba_output[0]
 
-               # Create a mapping from model's internal class encoding (integer) to its string label
-               # This ensures we can get the human-readable string names for the classes the model trained on.
                model_string_classes = st.session_state.label_encoder.inverse_transform(st.session_state.ai_model.classes_)
-               
-               # Now create the map from string label to the probability column index
-               # This map will have keys like 'Over 21', 'Under 21', and values like 0, 1 (indices into the probabilities array)
-               model_classes_map = {cls_str: idx for idx, cls_str in enumerate(model_string_classes)}
 
-               # Get the model's internal encoding for the predicted outcome string
-               # This ensures we are looking up the correct probability based on what the model actually outputs
-               if predicted_outcome_ai in model_classes_map:
-                   model_internal_index = model_classes_map[predicted_outcome_ai]
+               # Ensure the predicted outcome is one of the known classes
+               if predicted_outcome_ai in model_string_classes:
+                   model_internal_index = list(model_string_classes).index(predicted_outcome_ai)
                    confidence_ai = probabilities[model_internal_index] * 100
-                   # This print statement should now correctly show the internal index
-                   print(f"DEBUG (PREDICTION): Model internal index for predicted outcome: {model_internal_index}")
                else:
-                   # If the predicted outcome was not one the model was trained to output directly
-                   confidence_ai = 0.0 # Assign 0% confidence if the model didn't learn to predict it
-                   st.warning(f"AI Model did not output probability for '{predicted_outcome_ai}'. Setting confidence to 0%. This usually means the model was not trained on this specific outcome class in the historical data.")
-                   print(f"DEBUG (PREDICTION): Model internal index for predicted outcome: N/A (Class not in model_classes_map)")
+                   confidence_ai = 0.0
+                   st.warning(f"AI Model predicted an unknown outcome '{predicted_outcome_ai}'. Setting confidence to 0%.")
 
-
-               # DEBUG PRINTS (keep these updated ones)
-               print(f"DEBUG (PREDICTION): Raw probabilities output shape: {proba_output.shape}")
-               print(f"DEBUG (PREDICTION): Model's classes_ attribute: {st.session_state.ai_model.classes_.tolist()}")
-               print(f"DEBUG (PREDICTION): Predicted outcome string: {predicted_outcome_ai}")
-               print(f"DEBUG (PREDICTION): Confidence calculated: {confidence_ai:.1f}%")
-
-               # Corrected indentation for the display elements
                st.markdown(f"➡️ **{predicted_outcome_ai}** (Confidence: {confidence_ai:.1f}%)")
-               st.caption(f"Based on the last {PREDICTION_ROUNDS_CONSIDERED} outcomes in the current deck.")
-
+               st.caption(f"Based on the last {PREDICTION_ROUNDS_CONSIDERED} outcomes, **time of day, day of week, and current deck progress.**")
                prob_df = pd.DataFrame({
-                   'Outcome': model_string_classes, # <-- CHANGE THIS LINE to use the actual string classes the model outputs
+                   'Outcome': model_string_classes,
                    'Probability': probabilities
                }).sort_values(by='Probability', ascending=False)
                st.dataframe(prob_df, hide_index=True, use_container_width=True)
 
            except ValueError as e:
-               st.error(f"AI Model prediction error: {e}. Ensure historical outcomes are consistent with model training and the LabelEncoder.")
+               st.error(f"AI Model prediction error: {e}. This often means your historical data for the current deck is insufficient or inconsistent for the chosen PREDICTION_ROUNDS_CONSIDERED.")
                ai_model_prediction_error_occurred = True
            except Exception as e:
                st.error(f"An unexpected error occurred during AI model prediction: {e}")
                ai_model_prediction_error_occurred = True
    else:
-       # This else block covers cases where the model is not ready
-       st.info("AI Model is not loaded. Please train the model first to get predictions.")
+       st.info("AI Model is not loaded or not fully trained (requires feature_columns_). Please ensure sufficient data and initial training.")
 
-else:
-   st.info("No rounds played yet to provide any predictions.")
+   # --- End AI Prediction Section ---
