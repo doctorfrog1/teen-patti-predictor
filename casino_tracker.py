@@ -248,28 +248,6 @@ def load_all_historical_rounds_from_sheet():
 # --- Existing Helper Functions (Example: save_rounds function, etc.) ---
 # ... (your existing helper functions like `save_rounds`, `load_rounds`, etc.) ...
 
-# NEW HELPER FUNCTION: To color card symbols
-def get_colored_card_html(card_display_string):
-    """
-    Takes a card string (e.g., "A♠", "K♦", "10♥", "J♣")
-    and returns an HTML string with the suit colored red or black.
-    """
-    if len(card_display_string) < 2:
-        return card_display_string # Return as-is if not a valid card format
-
-    # Assuming the suit symbol is the last character
-    suit_char = card_display_string[-1]
-    
-    # The value part is everything before the suit
-    value_part = card_display_string[:-1]
-
-    if suit_char in ['♦', '♥']: # Diamonds and Hearts are red
-        return f'<span style="color:red;">{value_part}{suit_char}</span>'
-    elif suit_char in ['♠', '♣']: # Spades and Clubs are black
-        return f'<span style="color:black;">{value_part}{suit_char}</span>'
-    else:
-        # If it's not a recognized suit symbol, return as black by default or original string
-        return f'<span style="color:black;">{card_display_string}</span>'
 
 # NEW HELPER FUNCTION: Extracts base features common for training and prediction
 def _get_base_features(df_input):
@@ -797,19 +775,6 @@ card3 = st.selectbox("Select Card 3", [c for c in available_cards_for_selection 
 if card1 and card2 and card3:
    total = card_values[card1] + card_values[card2] + card_values[card3]
    st.write(f"**Calculated Total:** {total}")
-
-   # --- ADD THIS NEW CODE BLOCK HERE ---
-   st.write("---") # Optional: A separator for visual clarity
-   st.subheader("Selected Cards:")
-   # Get the HTML strings for each selected card
-   colored_card1_html = get_colored_card_html(card1)
-   colored_card2_html = get_colored_card_html(card2)
-   colored_card3_html = get_colored_card_html(card3)
-
-   # Display them using st.markdown to render the HTML
-   st.markdown(f"<p style='font-size: 2em; text-align: center;'>{colored_card1_html} {colored_card2_html} {colored_card3_html}</p>", unsafe_allow_html=True)
-   st.write("---") # Optional: Another separator
-   # --- END OF NEW CODE BLOCK ---
 
    outcome = ""
    if total > 21:
