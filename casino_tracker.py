@@ -555,40 +555,83 @@ def reset_deck():
 ai_model_initial_load, label_encoder_initial_load = load_ai_model_from_drive()
 
 # --- Session State Initialization ---
+# --- PLACE THE FOLLOWING CODE BLOCK HERE (RIGHT AFTER `save_rounds()` function definition) ---
+
+# --- Initial AI Model Training/Loading on App Startup ---
+# This code runs once when your Streamlit app starts up
+
+# Initialize session state for AI model and LabelEncoder if they don't exist
+# It's good practice to ensure these are always defined in session_state early.
+if 'ai_model' not in st.session_state:
+    st.session_state.ai_model = None
+if 'label_encoder' not in st.session_state:
+    st.session_state.label_encoder = None
+
+# Attempt to load saved model and encoder first from Google Drive
+# `load_ai_model_from_drive()` already updates st.session_state directly if successful.
+# We store the return values to check if loading actually happened.
+loaded_model, loaded_encoder = load_ai_model_from_drive()
+
+# If model is still not loaded (e.g., first run, or loading failed), attempt to train it
+# `load_all_historical_rounds_from_sheet()` is designed to fetch data for training.
+if st.session_state.ai_model is None: # Check if the model wasn't loaded by load_ai_model_from_drive()
+    all_rounds_df_for_initial_training = load_all_historical_rounds_from_sheet() # Use this for data for training
+    if not all_rounds_df_for_initial_training.empty:
+        st.info("AI Model not found or loaded. Attempting to train from historical data...")
+        # `train_and_save_prediction_model()` handles the full training and saving process.
+        training_successful = train_and_save_prediction_model()
+        if training_successful:
+            # After successful training, reload into session state if it wasn't done internally by train_and_save_prediction_model
+            # (though train_and_save_prediction_model calls save_ai_model_to_drive which uploads, not loads back)
+            # So, re-loading from Drive after successful training is a good explicit step here.
+            st.session_state.ai_model, st.session_state.label_encoder = load_ai_model_from_drive()
+            if st.session_state.ai_model:
+                st.success("AI Model trained from historical data and ready!")
+            else:
+                st.warning("AI Model trained but failed to load into session state from Drive. Check Drive permissions.")
+        else:
+            st.warning("AI Model could not be trained initially. Please ensure sufficient and diverse historical data (at least 2 different outcomes) in your Google Sheet.")
+    else:
+        st.info("No historical data available to train the AI model on app startup.")
+
+# --- END OF Initial AI Model Training/Loading on App Startup ---
+
+
+# --- Session State Initialization (Keep these, they are standard Streamlit practice) ---
 if 'rounds' not in st.session_state:
-   st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
+    st.session_state.rounds = pd.DataFrame(columns=['Timestamp', 'Round_ID', 'Card1', 'Card2', 'Card3', 'Sum', 'Outcome', 'Deck_ID'])
 
 if 'current_deck_id' not in st.session_state:
-   temp_gc, _ = get_gspread_and_drive_clients()
-   temp_df = pd.DataFrame()
-   if temp_gc:
-       try:
-           temp_spreadsheet = temp_gc.open("Casino Card Game Log")
-           temp_worksheet = temp_spreadsheet.worksheet("Sheet1")
-           temp_data = temp_worksheet.get_all_records()
-           if temp_data:
-               temp_df = pd.DataFrame(temp_data)
-               if 'Deck_ID' in temp_df.columns and not temp_df.empty:
-                   st.session_state.current_deck_id = temp_df['Deck_ID'].max()
-               else:
-                   st.session_state.current_deck_id = 1
-           else:
-               st.session_state.current_deck_id = 1
-       except Exception:
-           st.session_state.current_deck_id = 1
-   else:
-       st.session_state.current_deck_id = 1
+    temp_gc, _ = get_gspread_and_drive_clients()
+    temp_df = pd.DataFrame()
+    if temp_gc:
+        try:
+            temp_spreadsheet = temp_gc.open("Casino Card Game Log")
+            temp_worksheet = temp_spreadsheet.worksheet("Sheet1")
+            temp_data = temp_worksheet.get_all_records()
+            if temp_data:
+                temp_df = pd.DataFrame(temp_data)
+                if 'Deck_ID' in temp_df.columns and not temp_df.empty:
+                    st.session_state.current_deck_id = temp_df['Deck_ID'].max()
+                else:
+                    st.session_state.current_deck_id = 1
+            else:
+                st.session_state.current_deck_id = 1
+        except Exception:
+            st.session_state.current_deck_id = 1
+    else:
+        st.session_state.current_deck_id = 1
 
 if 'played_cards' not in st.session_state:
-   st.session_state.played_cards = set()
+    st.session_state.played_cards = set()
 
-if 'ai_model' not in st.session_state:
-   st.session_state.ai_model = ai_model_initial_load
-if 'label_encoder' not in st.session_state:
-   st.session_state.label_encoder = label_encoder_initial_load
+# Note: The AI model and label encoder are now handled by the block above,
+# so you don't need the redundant `if 'ai_model' not in st.session_state:` checks here.
+# The previous block ensures they are set in session state.
 
 if 'historical_patterns' not in st.session_state:
-   st.session_state.historical_patterns = pd.DataFrame(columns=['Timestamp', 'Deck_ID', 'Pattern_Name', 'Pattern_Sequence', 'Start_Round_ID', 'End_Round_ID'])
+    st.session_state.historical_patterns = pd.DataFrame(columns=['Timestamp', 'Deck_ID', 'Pattern_Name', 'Pattern_Sequence', 'Start_Round_ID', 'End_Round_ID'])
+
 
 # --- Load data on app startup ---
 load_rounds()
@@ -664,23 +707,18 @@ if card1 and card2 and card3:
 
        save_rounds()
        st.success("Round saved successfully!") # Optional: confirmation message
-       # --- START OF CONTINUOUS LEARNING LOGIC ---
-
-       # 1. Re-fetch ALL historical data (including the newly added round)
-       #    Make sure your fetch_all_rounds_from_gsheet() function reliably gets the LATEST data from GS.
-       all_rounds_df = fetch_all_rounds_from_gsheet() # Assuming this function is defined elsewhere in your code
-
-       if not all_rounds_df.empty:
-          st.info("Historical data updated. Re-training AI model with new data...")
-          # 2. Call the train_ai_model function with the updated historical data
-          #    This will retrain the model and save it to session state and Google Drive.
-          trained_model, trained_label_encoder = train_ai_model(all_rounds_df) # Assuming this function is defined
-
-          if trained_model is not None and trained_label_encoder is not None:
-            st.success("AI Model re-trained and updated with the latest data!")
+      
+      # --- START OF CONTINUOUS LEARNING LOGIC (UPDATED) ---
+      st.info("New round added. Triggering AI model re-training...")
+      with st.spinner("Re-training AI model with latest data..."):
+          training_successful = train_and_save_prediction_model() # This function handles fetching, training, and saving
+          if training_successful:
+              # Reload the model into session state after successful training/saving to Drive
+              st.session_state.ai_model, st.session_state.label_encoder = load_ai_model_from_drive()
+              st.success("AI Model re-trained and updated with the latest data!")
           else:
-            st.warning("AI Model could not be re-trained with the latest data. Please add more diverse historical outcomes.")
-       else:
+              st.warning("AI Model could not be re-trained with the latest data. See logs/messages above.")
+        # --- END OF CONTINUOUS LEARNING LOGIC ---
 
        st.rerun()
 else:
