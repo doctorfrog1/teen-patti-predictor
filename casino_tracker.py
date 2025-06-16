@@ -798,7 +798,7 @@ if card1 and card2 and card3:
    total = card_values[card1] + card_values[card2] + card_values[card3]
    st.write(f"**Calculated Total:** {total}")
 
-       # --- ADD THIS NEW CODE BLOCK HERE ---
+    # --- ADD THIS NEW CODE BLOCK HERE ---
     st.write("---") # Optional: A separator for visual clarity
     st.subheader("Selected Cards:")
     # Get the HTML strings for each selected card
