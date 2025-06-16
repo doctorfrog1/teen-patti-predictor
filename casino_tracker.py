@@ -248,6 +248,29 @@ def load_all_historical_rounds_from_sheet():
 # --- Existing Helper Functions (Example: save_rounds function, etc.) ---
 # ... (your existing helper functions like `save_rounds`, `load_rounds`, etc.) ...
 
+# NEW HELPER FUNCTION: To color card symbols
+def get_colored_card_html(card_display_string):
+    """
+    Takes a card string (e.g., "A♠", "K♦", "10♥", "J♣")
+    and returns an HTML string with the suit colored red or black.
+    """
+    if len(card_display_string) < 2:
+        return card_display_string # Return as-is if not a valid card format
+
+    # Assuming the suit symbol is the last character
+    suit_char = card_display_string[-1]
+    
+    # The value part is everything before the suit
+    value_part = card_display_string[:-1]
+
+    if suit_char in ['♦', '♥']: # Diamonds and Hearts are red
+        return f'<span style="color:red;">{value_part}{suit_char}</span>'
+    elif suit_char in ['♠', '♣']: # Spades and Clubs are black
+        return f'<span style="color:black;">{value_part}{suit_char}</span>'
+    else:
+        # If it's not a recognized suit symbol, return as black by default or original string
+        return f'<span style="color:black;">{card_display_string}</span>'
+
 # NEW HELPER FUNCTION: Extracts base features common for training and prediction
 def _get_base_features(df_input):
     """
