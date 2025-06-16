@@ -567,34 +567,45 @@ if 'ai_model' not in st.session_state:
 if 'label_encoder' not in st.session_state:
     st.session_state.label_encoder = None
 
-# Attempt to load saved model and encoder first from Google Drive
-# `load_ai_model_from_drive()` already updates st.session_state directly if successful.
-# We store the return values to check if loading actually happened.
-loaded_model, loaded_encoder = load_ai_model_from_drive()
+# Attempt to load the AI model from Google Drive if it hasn't been loaded yet in this session.
+# The `@st.cache_data` decorator on `load_ai_model_from_drive` will make sure
+# the actual download only happens once per run.
+if st.session_state.ai_model is None:
+    loaded_model, loaded_encoder = load_ai_model_from_drive()
+    if loaded_model is not None and loaded_encoder is not None:
+        st.session_state.ai_model = loaded_model
+        st.session_state.label_encoder = loaded_encoder
+        # Message already shown by load_ai_model_from_drive via st.sidebar.success
 
-# If model is still not loaded (e.g., first run, or loading failed), attempt to train it
-# `load_all_historical_rounds_from_sheet()` is designed to fetch data for training.
-if st.session_state.ai_model is None: # Check if the model wasn't loaded by load_ai_model_from_drive()
-    all_rounds_df_for_initial_training = load_all_historical_rounds_from_sheet() # Use this for data for training
+# If the model is still not loaded after attempting to download (e.g., first run, or download failed),
+# then try to train it using historical data from the Google Sheet.
+if st.session_state.ai_model is None:
+    # Fetch all historical data needed for training.
+    # Note: `load_all_historical_rounds_from_sheet()` is for training data,
+    # `load_rounds()` is for general app state.
+    all_rounds_df_for_initial_training = load_all_historical_rounds_from_sheet()
+
     if not all_rounds_df_for_initial_training.empty:
         st.info("AI Model not found or loaded. Attempting to train from historical data...")
-        # `train_and_save_prediction_model()` handles the full training and saving process.
-        training_successful = train_and_save_prediction_model()
-        if training_successful:
-            # After successful training, reload into session state if it wasn't done internally by train_and_save_prediction_model
-            # (though train_and_save_prediction_model calls save_ai_model_to_drive which uploads, not loads back)
-            # So, re-loading from Drive after successful training is a good explicit step here.
-            st.session_state.ai_model, st.session_state.label_encoder = load_ai_model_from_drive()
-            if st.session_state.ai_model:
-                st.success("AI Model trained from historical data and ready!")
+        with st.spinner("Training AI model... This might take a moment."):
+            # `train_and_save_prediction_model()` handles the full process of training,
+            # saving locally, and uploading to Google Drive.
+            training_successful = train_and_save_prediction_model()
+            if training_successful:
+                # After successful training and upload, re-load the model into session state
+                # to ensure the app uses the newly trained model immediately.
+                # This will *also* show a success message from `load_ai_model_from_drive`.
+                st.session_state.ai_model, st.session_state.label_encoder = load_ai_model_from_drive()
+                if st.session_state.ai_model:
+                    st.success("AI Model trained from historical data and ready for use!")
+                else:
+                    st.warning("AI Model trained but failed to load into session state. Check Drive permissions.")
             else:
-                st.warning("AI Model trained but failed to load into session state from Drive. Check Drive permissions.")
-        else:
-            st.warning("AI Model could not be trained initially. Please ensure sufficient and diverse historical data (at least 2 different outcomes) in your Google Sheet.")
+                st.warning("AI Model could not be trained initially. Please ensure sufficient and diverse historical data (at least 2 different outcomes) in your Google Sheet.")
     else:
-        st.info("No historical data available to train the AI model on app startup.")
+        st.info("No historical data available to train the AI model on app startup. Please add some rounds!")
 
-# --- END OF Initial AI Model Training/Loading on App Startup ---
+# --- END: Initial AI Model Setup ---
 
 
 # --- Session State Initialization (Keep these, they are standard Streamlit practice) ---
