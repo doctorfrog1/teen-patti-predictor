@@ -798,6 +798,19 @@ if card1 and card2 and card3:
    total = card_values[card1] + card_values[card2] + card_values[card3]
    st.write(f"**Calculated Total:** {total}")
 
+       # --- ADD THIS NEW CODE BLOCK HERE ---
+    st.write("---") # Optional: A separator for visual clarity
+    st.subheader("Selected Cards:")
+    # Get the HTML strings for each selected card
+    colored_card1_html = get_colored_card_html(card1)
+    colored_card2_html = get_colored_card_html(card2)
+    colored_card3_html = get_colored_card_html(card3)
+
+    # Display them using st.markdown to render the HTML
+    st.markdown(f"<p style='font-size: 2em; text-align: center;'>{colored_card1_html} {colored_card2_html} {colored_card3_html}</p>", unsafe_allow_html=True)
+    st.write("---") # Optional: Another separator
+    # --- END OF NEW CODE BLOCK ---
+
    outcome = ""
    if total > 21:
        outcome = "Over 21"
