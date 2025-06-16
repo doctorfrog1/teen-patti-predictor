@@ -7,6 +7,7 @@ import os # Keep this for local file operations like model saving
 import joblib
 import traceback # Import traceback for detailed error logging
 import numpy as np # NEW: Added for robust NaN handling and Deck_ID generation
+from sklearn.ensemble import RandomForestClassifier
 
 # Machine Learning imports
 from sklearn.preprocessing import LabelEncoder
@@ -407,7 +408,7 @@ def train_ai_model(df_all_rounds):
     # --- End Feature Engineering ---
 
     # Train the Logistic Regression model
-    model = LogisticRegression(max_iter=2000, random_state=42, solver='liblinear') # Increased max_iter and used liblinear for robustness
+    model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced')
     try:
         model.fit(X_combined, y_aligned)
 
