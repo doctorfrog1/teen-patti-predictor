@@ -408,7 +408,7 @@ def train_ai_model(df_all_rounds):
     # --- End Feature Engineering ---
 
     # Train the Logistic Regression model
-    model = RandomForestClassifier(n_estimators=10000, random_state=42, class_weight='balanced')
+    model = RandomForestClassifier(n_estimators=1000, random_state=42, class_weight='balanced')
     try:
         model.fit(X_combined, y_aligned)
 
