@@ -407,8 +407,30 @@ def train_ai_model(df_all_rounds):
     X_combined = X_combined.fillna(0)
     # --- End Feature Engineering ---
 
-    # Train the Logistic Regression model
-    model = RandomForestClassifier(n_estimators=500, random_state=42, class_weight='balanced')
+    # 1. Add this temporary debug line to verify label_encoder classes order
+    st.write('Label Encoder Classes Order:', label_encoder.classes_)
+
+    # 2. Define your custom class weights based on the order from label_encoder.classes_
+    # This dictionary maps the ENCODED INTEGER VALUES to their desired weights.
+    # The .get() method ensures it works even if a label isn't present for some reason.
+    outcome_to_encoded = {label: i for i, label in enumerate(label_encoder.classes_)}
+    
+    custom_class_weights = {
+        outcome_to_encoded.get('Under 21', 0): 0.5,  # Give lower weight to the majority class
+        outcome_to_encoded.get('Over 21', 1): 1.5,   # Give higher weight to 'Over 21'
+        outcome_to_encoded.get('Exactly 21', 2): 8.0   # Give much higher weight to the very rare 'Exactly 21'
+    }
+    
+    # 3. Add this temporary debug line to show the weights being used
+    st.write('Using Custom Class Weights:', custom_class_weights)
+
+    # 4. Modify the RandomForestClassifier initialization line
+    model = RandomForestClassifier(
+        n_estimators=500,
+        random_state=42,
+        class_weight=custom_class_weights # <-- THIS IS THE KEY CHANGE: Use your custom_class_weights
+    )
+    # --- END CHANGES HERE ---
     try:
         model.fit(X_combined, y_aligned)
 
