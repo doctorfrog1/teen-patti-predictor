@@ -25,7 +25,7 @@ import io # Needed for downloading files
 # --- Configuration ---
 MODEL_FOLDER_ID = "1CZepfjRZxWV_wfmEQuZLnbj9H2yAS9Ac"
 PLAYER_A_FIXED_CARDS_STR = {'J♣', '10♠', '8♠'}
-PREDICTION_ROUNDS_CONSIDERED = 10 # Number of previous rounds to consider for AI sequence prediction
+PREDICTION_ROUNDS_CONSIDERED = 1 # Number of previous rounds to consider for AI sequence prediction
 STREAK_THRESHOLD = 3
 OVER_UNDER_BIAS_THRESHOLD = 0.6
 
