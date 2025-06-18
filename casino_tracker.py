@@ -407,9 +407,6 @@ def train_ai_model(df_all_rounds):
     X_combined = X_combined.fillna(0)
     # --- End Feature Engineering ---
 
-    # 1. Add this temporary debug line to verify label_encoder classes order
-    st.write('Label Encoder Classes Order:', label_encoder.classes_)
-
     # 2. Define your custom class weights based on the order from label_encoder.classes_
     # This dictionary maps the ENCODED INTEGER VALUES to their desired weights.
     # The .get() method ensures it works even if a label isn't present for some reason.
